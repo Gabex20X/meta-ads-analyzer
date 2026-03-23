@@ -7,6 +7,15 @@ from plotly.subplots import make_subplots
 import json
 import io
 import os
+from datetime import datetime
+
+# ── [REGRA 2] Importações para exportação PDF e PPTX ─────────────────────────
+from fpdf import FPDF                              # fpdf2 — suporte UTF-8 nativo
+from pptx import Presentation                      # python-pptx
+from pptx.util import Inches, Pt, Emu
+from pptx.dml.color import RGBColor
+from pptx.enum.text import PP_ALIGN
+# ─────────────────────────────────────────────────────────────────────────────
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -533,6 +542,352 @@ def run_gemini_analysis(api_key: str, prompt: str, model_name: str) -> str:
     return response.text
 
 
+# ── [REGRA 1] Stop Loss — lógica de diagnóstico de risco ─────────────────────
+# Varre o DataFrame por campanha e retorna uma lista de alertas estruturados.
+# Cada alerta tem: tipo ("error" | "warning"), campanha e mensagem.
+# A função é agnóstica à plataforma — usa apenas colunas do padrão interno.
+
+STOP_LOSS_SPEND_THRESHOLD = 100   # Gasto mínimo (moeda local) para alertar verba queimada
+STOP_LOSS_CTR_MIN         = 0.50  # CTR mínimo aceitável em %
+STOP_LOSS_ROAS_MIN        = 1.0   # ROAS mínimo para campanhas com conversão
+
+def run_stop_loss(df: pd.DataFrame, sym: str) -> list[dict]:
+    """
+    Percorre o DataFrame agrupado por campanha e retorna alertas de risco.
+    Retorna lista de dicts: {level: 'error'|'warning', campaign: str, msg: str}
+    """
+    alerts = []
+
+    # Se não tiver campanha, analisa o DataFrame inteiro como uma "conta"
+    group_col = "campaign_name" if "campaign_name" in df.columns else None
+    groups = df.groupby(group_col) if group_col else [("Conta geral", df)]
+
+    for camp_name, group in groups:
+        spend       = group["spend"].sum()       if "spend"       in group.columns else None
+        conversions = group["conversions"].sum()  if "conversions" in group.columns else None
+        ctr         = group["ctr"].mean()         if "ctr"         in group.columns else None
+        roas        = group["roas"].mean()        if "roas"        in group.columns else None
+
+        # ── Alerta 1: Queima de Verba ───────────────────────────────────────
+        # Gastou acima do threshold mas não gerou nenhuma conversão
+        if spend is not None and conversions is not None:
+            if spend > STOP_LOSS_SPEND_THRESHOLD and conversions == 0:
+                alerts.append({
+                    "level":    "error",
+                    "campaign": camp_name,
+                    "msg": (
+                        f"🔥 **Queima de Verba** — Investimento de {sym} {spend:,.2f} "
+                        f"sem nenhuma conversão registrada. Pausar ou revisar urgentemente."
+                    ),
+                })
+
+        # ── Alerta 2: Baixa Relevância (CTR) ────────────────────────────────
+        # CTR abaixo de 0.50% indica criativos ou segmentação fracos
+        if ctr is not None and ctr < STOP_LOSS_CTR_MIN:
+            alerts.append({
+                "level":    "warning",
+                "campaign": camp_name,
+                "msg": (
+                    f"📉 **Baixa Relevância** — CTR médio de {ctr:.2f}% está abaixo do "
+                    f"mínimo recomendado de {STOP_LOSS_CTR_MIN}%. "
+                    f"Revisar criativos e segmentação."
+                ),
+            })
+
+        # ── Alerta 3: Prejuízo (ROAS < 1) ───────────────────────────────────
+        # Só alertar se houve conversão para não confundir campanhas de topo de funil
+        if roas is not None and conversions is not None and conversions > 0:
+            if roas < STOP_LOSS_ROAS_MIN:
+                alerts.append({
+                    "level":    "error",
+                    "campaign": camp_name,
+                    "msg": (
+                        f"🚨 **Prejuízo** — ROAS de {roas:.2f}x está abaixo de 1.0. "
+                        f"A campanha está gerando menos receita do que consome. "
+                        f"Ação imediata necessária."
+                    ),
+                })
+
+    return alerts
+# ── [fim REGRA 1] ─────────────────────────────────────────────────────────────
+
+
+# ── [REGRA 2] Geradores de relatório — PDF e PPTX ────────────────────────────
+
+def _kpi_lines(summary: dict, sym: str) -> list[str]:
+    """Formata os KPIs do summary como linhas de texto simples para relatórios."""
+    mapping = {
+        "total_campaigns":   ("Campanhas",      lambda v: str(int(v))),
+        "total_spend":       ("Investimento",   lambda v: f"{sym} {v:,.2f}"),
+        "total_impressions": ("Impressões",     lambda v: f"{v:,.0f}"),
+        "total_clicks":      ("Cliques",        lambda v: f"{v:,.0f}"),
+        "avg_ctr":           ("CTR Médio",      lambda v: f"{v:.2f}%"),
+        "avg_cpc":           ("CPC Médio",      lambda v: f"{sym} {v:,.2f}"),
+        "avg_roas":          ("ROAS Médio",     lambda v: f"{v:.2f}x"),
+        "total_conversions": ("Conversões",     lambda v: f"{v:,.0f}"),
+        "total_revenue":     ("Receita Total",  lambda v: f"{sym} {v:,.2f}"),
+    }
+    lines = []
+    for key, (label, fmt) in mapping.items():
+        if key in summary and summary[key] is not None:
+            lines.append(f"{label}: {fmt(summary[key])}")
+    return lines
+
+
+def generate_pdf(
+    platform: str,
+    summary: dict,
+    alerts: list[dict],
+    analysis_text: str,
+    sym: str,
+) -> bytes:
+    """
+    Gera um PDF completo com:
+      - Título e metadados
+      - Resumo dos KPIs
+      - Alertas do Stop Loss
+      - Análise estratégica completa do Gemini
+    Retorna os bytes do PDF prontos para st.download_button.
+    """
+
+    class UTF8PDF(FPDF):
+        """FPDF com suporte a caracteres UTF-8 via fonte DejaVu embutida."""
+        def header(self):
+            # Barra de topo colorida
+            self.set_fill_color(124, 106, 255)   # roxo #7c6aff
+            self.rect(0, 0, 210, 8, "F")
+            self.ln(10)
+
+        def footer(self):
+            self.set_y(-15)
+            self.set_font("DejaVu", size=8)
+            self.set_text_color(150, 150, 170)
+            self.cell(0, 10, f"Marketing Digital Hub  ·  {platform}  ·  Página {self.page_no()}", align="C")
+
+    pdf = UTF8PDF()
+    # fpdf2: adiciona fonte com suporte Unicode (DejaVu está embutida)
+    pdf.add_font("DejaVu", fname="DejaVuSans.ttf")
+    pdf.add_font("DejaVu", style="B", fname="DejaVuSans-Bold.ttf")
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.add_page()
+
+    # ── Título ──
+    pdf.set_font("DejaVu", style="B", size=22)
+    pdf.set_text_color(124, 106, 255)
+    pdf.cell(0, 12, "Marketing Digital Hub", ln=True, align="C")
+
+    pdf.set_font("DejaVu", size=11)
+    pdf.set_text_color(107, 104, 128)
+    pdf.cell(0, 7, f"Plataforma: {platform}  ·  Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=True, align="C")
+    pdf.ln(6)
+
+    # ── Linha separadora ──
+    pdf.set_draw_color(42, 42, 58)
+    pdf.line(10, pdf.get_y(), 200, pdf.get_y())
+    pdf.ln(6)
+
+    # ── KPIs ──
+    pdf.set_font("DejaVu", style="B", size=13)
+    pdf.set_text_color(232, 230, 255)
+    pdf.cell(0, 8, "Resumo de KPIs", ln=True)
+    pdf.ln(2)
+
+    kpi_lines = _kpi_lines(summary, sym)
+    pdf.set_font("DejaVu", size=10)
+    pdf.set_text_color(200, 198, 232)
+    for i, line in enumerate(kpi_lines):
+        # Duas colunas
+        if i % 2 == 0:
+            pdf.cell(95, 7, line)
+        else:
+            pdf.cell(95, 7, line, ln=True)
+    if len(kpi_lines) % 2 != 0:
+        pdf.ln(7)
+    pdf.ln(5)
+
+    # ── Stop Loss ──
+    pdf.set_font("DejaVu", style="B", size=13)
+    pdf.set_text_color(232, 230, 255)
+    pdf.cell(0, 8, "Diagnostico de Risco (Stop Loss)", ln=True)
+    pdf.ln(2)
+
+    pdf.set_font("DejaVu", size=10)
+    if not alerts:
+        pdf.set_text_color(79, 255, 176)   # verde #4fffb0
+        pdf.multi_cell(0, 6, "Todas as campanhas estao dentro dos parametros saudaveis. Nenhum alerta de risco detectado.")
+    else:
+        for alert in alerts:
+            color = (255, 79, 106) if alert["level"] == "error" else (255, 204, 79)
+            pdf.set_text_color(*color)
+            # Remove markdown bold markers para o PDF
+            clean_msg = alert["msg"].replace("**", "").replace("*", "")
+            prefix = "[CRITICO]" if alert["level"] == "error" else "[ATENCAO]"
+            pdf.multi_cell(0, 6, f"{prefix} {alert['campaign']}: {clean_msg}")
+            pdf.ln(1)
+    pdf.ln(5)
+
+    # ── Análise Gemini ──
+    pdf.set_font("DejaVu", style="B", size=13)
+    pdf.set_text_color(232, 230, 255)
+    pdf.cell(0, 8, "Analise Estrategica — Gemini AI", ln=True)
+    pdf.ln(2)
+
+    pdf.set_font("DejaVu", size=9)
+    pdf.set_text_color(200, 198, 232)
+    # Remove emojis e formatação markdown pesada para compatibilidade PDF
+    clean_analysis = analysis_text.replace("###", "").replace("##", "").replace("**", "")
+    pdf.multi_cell(0, 5.5, clean_analysis)
+
+    return bytes(pdf.output())
+
+
+def generate_pptx(
+    platform: str,
+    summary: dict,
+    alerts: list[dict],
+    analysis_text: str,
+    sym: str,
+) -> bytes:
+    """
+    Gera uma apresentação PPTX com 3 slides:
+      - Slide 1: Capa com plataforma e data
+      - Slide 2: KPIs e alertas de Stop Loss
+      - Slide 3: Análise estratégica do Gemini
+    Retorna os bytes do PPTX prontos para st.download_button.
+    """
+    prs = Presentation()
+    prs.slide_width  = Inches(13.33)
+    prs.slide_height = Inches(7.5)
+
+    # Paleta de cores
+    C_BG      = RGBColor(0x0a, 0x0a, 0x0f)   # #0a0a0f
+    C_SURFACE = RGBColor(0x12, 0x12, 0x1a)   # #12121a
+    C_ACCENT  = RGBColor(0x7c, 0x6a, 0xff)   # #7c6aff
+    C_ACCENT2 = RGBColor(0xff, 0x6a, 0x9b)   # #ff6a9b
+    C_TEXT    = RGBColor(0xe8, 0xe6, 0xff)   # #e8e6ff
+    C_MUTED   = RGBColor(0x6b, 0x68, 0x80)   # #6b6880
+    C_SUCCESS = RGBColor(0x4f, 0xff, 0xb0)   # #4fffb0
+    C_ERROR   = RGBColor(0xff, 0x4f, 0x6a)   # #ff4f6a
+    C_WARN    = RGBColor(0xff, 0xcc, 0x4f)   # #ffcc4f
+
+    blank_layout = prs.slide_layouts[6]  # layout em branco
+
+    def add_rect(slide, l, t, w, h, fill_rgb, alpha=None):
+        shape = slide.shapes.add_shape(1, Inches(l), Inches(t), Inches(w), Inches(h))
+        shape.line.fill.background()
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = fill_rgb
+        return shape
+
+    def add_text_box(slide, text, l, t, w, h, size=14, bold=False, color=None, align=PP_ALIGN.LEFT, wrap=True):
+        txb = slide.shapes.add_textbox(Inches(l), Inches(t), Inches(w), Inches(h))
+        txb.word_wrap = wrap
+        tf = txb.text_frame
+        tf.word_wrap = wrap
+        p = tf.paragraphs[0]
+        p.alignment = align
+        run = p.add_run()
+        run.text = text
+        run.font.size = Pt(size)
+        run.font.bold = bold
+        run.font.color.rgb = color or C_TEXT
+        return txb
+
+    # ────────────────────────────────────────────────────────────────────────
+    # SLIDE 1 — Capa
+    # ────────────────────────────────────────────────────────────────────────
+    s1 = prs.slides.add_slide(blank_layout)
+    add_rect(s1, 0, 0, 13.33, 7.5, C_BG)                      # fundo escuro
+    add_rect(s1, 0, 0, 13.33, 0.12, C_ACCENT)                  # barra topo roxa
+    add_rect(s1, 0, 7.38, 13.33, 0.12, C_ACCENT2)              # barra base rosa
+    add_rect(s1, 5.5, 2.5, 2.33, 0.06, C_ACCENT)               # linha decorativa
+
+    add_text_box(s1, "Marketing Digital Hub", 1, 1.6, 11.33, 1.2,
+                 size=40, bold=True, color=C_ACCENT, align=PP_ALIGN.CENTER)
+    add_text_box(s1, f"Plataforma: {platform}", 1, 2.9, 11.33, 0.7,
+                 size=20, bold=False, color=C_TEXT, align=PP_ALIGN.CENTER)
+    add_text_box(s1, "Relatório de Performance com Diagnóstico de Risco", 1, 3.55, 11.33, 0.6,
+                 size=14, color=C_MUTED, align=PP_ALIGN.CENTER)
+    add_text_box(s1, f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}", 1, 6.5, 11.33, 0.5,
+                 size=10, color=C_MUTED, align=PP_ALIGN.CENTER)
+
+    # ────────────────────────────────────────────────────────────────────────
+    # SLIDE 2 — KPIs + Stop Loss
+    # ────────────────────────────────────────────────────────────────────────
+    s2 = prs.slides.add_slide(blank_layout)
+    add_rect(s2, 0, 0, 13.33, 7.5, C_BG)
+    add_rect(s2, 0, 0, 13.33, 0.08, C_ACCENT)
+
+    add_text_box(s2, "KPIs & Diagnóstico de Risco", 0.4, 0.18, 12, 0.65,
+                 size=22, bold=True, color=C_ACCENT)
+
+    # ── KPI grid (2 colunas) ──
+    kpi_lines = _kpi_lines(summary, sym)
+    col_w, row_h = 5.8, 0.55
+    for idx, line in enumerate(kpi_lines[:10]):   # max 10 KPIs
+        col = idx % 2
+        row = idx // 2
+        bx = 0.4 + col * 6.5
+        by = 1.05 + row * row_h
+        add_rect(s2, bx, by, col_w, row_h - 0.06, C_SURFACE)
+        add_text_box(s2, line, bx + 0.15, by + 0.05, col_w - 0.3, row_h - 0.12,
+                     size=11, color=C_TEXT)
+
+    kpi_rows = (min(len(kpi_lines), 10) + 1) // 2
+    alert_y = 1.05 + kpi_rows * row_h + 0.2
+
+    # ── Stop Loss ──
+    add_text_box(s2, "🛑 Diagnóstico de Risco (Stop Loss)", 0.4, alert_y, 12, 0.5,
+                 size=14, bold=True, color=C_ERROR if alerts else C_SUCCESS)
+    alert_y += 0.5
+
+    if not alerts:
+        add_rect(s2, 0.4, alert_y, 12.4, 0.5, RGBColor(0x0d, 0x2b, 0x22))
+        add_text_box(s2, "✅  Todas as campanhas estão dentro dos parâmetros saudáveis.", 0.55, alert_y + 0.05,
+                     12, 0.4, size=11, color=C_SUCCESS)
+    else:
+        for alert in alerts[:4]:   # max 4 alertas no slide
+            col_bg = RGBColor(0x2b, 0x0d, 0x12) if alert["level"] == "error" else RGBColor(0x2b, 0x24, 0x0d)
+            col_tx = C_ERROR if alert["level"] == "error" else C_WARN
+            clean = alert["msg"].replace("**", "").replace("*", "")
+            add_rect(s2, 0.4, alert_y, 12.4, 0.52, col_bg)
+            add_text_box(s2, clean[:130], 0.55, alert_y + 0.04, 12, 0.44,
+                         size=9, color=col_tx)
+            alert_y += 0.58
+
+    # ────────────────────────────────────────────────────────────────────────
+    # SLIDE 3 — Análise Estratégica Gemini
+    # ────────────────────────────────────────────────────────────────────────
+    s3 = prs.slides.add_slide(blank_layout)
+    add_rect(s3, 0, 0, 13.33, 7.5, C_BG)
+    add_rect(s3, 0, 0, 13.33, 0.08, C_ACCENT2)
+
+    add_text_box(s3, "Análise Estratégica — Gemini AI", 0.4, 0.18, 12, 0.65,
+                 size=22, bold=True, color=C_ACCENT2)
+    add_text_box(s3, f"Plataforma: {platform}", 0.4, 0.78, 12, 0.35,
+                 size=10, color=C_MUTED)
+
+    # Limpa markdown para o PPTX e trunca para caber no slide
+    clean = (analysis_text
+             .replace("###", "")
+             .replace("##", "")
+             .replace("**", "")
+             .replace("*", ""))
+    max_chars = 2200
+    if len(clean) > max_chars:
+        clean = clean[:max_chars] + "\n\n[...] Texto completo disponível no download .txt"
+
+    add_text_box(s3, clean, 0.4, 1.2, 12.53, 6.0,
+                 size=9, color=C_TEXT, wrap=True)
+
+    # ── Salva para bytes ──
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
+# ── [fim REGRA 2 — funções de exportação] ────────────────────────────────────
+
+
 # Chart theme
 CHART_THEME = dict(
     paper_bgcolor="rgba(0,0,0,0)",
@@ -941,7 +1296,41 @@ if uploaded_file:
         if fig_funnel:
             st.plotly_chart(fig_funnel, use_container_width=True, config={"displayModeBar": False})
 
-    # ── Analysis button ────────────────────────────────────────────────────
+    # ── [REGRA 1] Stop Loss — Diagnóstico de Risco ────────────────────────
+    # Posicionado logo acima da seção de Análise com IA, conforme solicitado.
+    # Os alertas são calculados aqui e também armazenados em session_state
+    # para que a seção de exportação (mais abaixo) possa acessá-los.
+    st.markdown('<div class="section-title">🛑 Gestão de Risco</div>', unsafe_allow_html=True)
+
+    risk_alerts = run_stop_loss(df, sym)
+    # Persiste alertas para uso no gerador de relatórios
+    st.session_state["risk_alerts"] = risk_alerts
+
+    with st.expander("🛑 Diagnóstico de Risco (Stop Loss)", expanded=bool(risk_alerts)):
+        if not risk_alerts:
+            st.success(
+                "✅ **Todas as campanhas estão saudáveis!** "
+                "Nenhum alerta de queima de verba, baixa relevância ou prejuízo detectado.",
+                icon="✅",
+            )
+        else:
+            # Contadores por severidade para o resumo no topo
+            n_errors   = sum(1 for a in risk_alerts if a["level"] == "error")
+            n_warnings = sum(1 for a in risk_alerts if a["level"] == "warning")
+            st.markdown(
+                f"**{len(risk_alerts)} alerta(s) encontrado(s):** "
+                f"{n_errors} crítico(s) 🔴  ·  {n_warnings} atenção 🟡"
+            )
+            st.markdown("---")
+            for alert in risk_alerts:
+                camp_label = f"**Campanha:** `{alert['campaign']}`  —  "
+                if alert["level"] == "error":
+                    st.error(camp_label + alert["msg"])
+                else:
+                    st.warning(camp_label + alert["msg"])
+    # ── [fim REGRA 1] ────────────────────────────────────────────────────────
+
+    # ── Análise com IA ────────────────────────────────────────────────────────
     st.markdown('<div class="section-title">🤖 Análise com IA</div>', unsafe_allow_html=True)
 
     col_btn, col_info = st.columns([1, 3])
@@ -959,6 +1348,11 @@ if uploaded_file:
             with st.spinner("Gemini está analisando seus dados…"):
                 try:
                     analysis = run_gemini_analysis(api_key, prompt, model_choice)
+
+                    # [REGRA 2] Persiste o texto da análise para o gerador de relatórios
+                    st.session_state["gemini_analysis"] = analysis
+                    st.session_state["report_summary"]  = summary
+                    st.session_state["report_sym"]      = sym
 
                     st.markdown("""
                     <div class="ai-box">
@@ -980,6 +1374,71 @@ if uploaded_file:
                     )
                 except Exception as e:
                     st.error(f"Erro na API do Gemini: {e}")
+
+    # ── [REGRA 2] Download de Relatórios (PDF e PPTX) ────────────────────────
+    # A seção só fica ativa após a análise do Gemini ter sido executada ao
+    # menos uma vez (dados armazenados em session_state).
+    st.markdown('<div class="section-title">📥 Download de Relatórios</div>', unsafe_allow_html=True)
+
+    has_report = (
+        "gemini_analysis" in st.session_state
+        and st.session_state["gemini_analysis"]
+    )
+
+    if not has_report:
+        st.info(
+            "💡 Execute a **Análise com Gemini** acima para liberar a exportação de relatórios.",
+            icon="🔒",
+        )
+    else:
+        st.markdown(
+            "Relatórios gerados com os KPIs, alertas de risco e a análise completa do Gemini."
+        )
+
+        col_pdf, col_pptx, col_spacer = st.columns([1, 1, 2])
+
+        # ── Botão PDF ──────────────────────────────────────────────────────
+        with col_pdf:
+            with st.spinner("Gerando PDF…"):
+                try:
+                    pdf_bytes = generate_pdf(
+                        platform     = platform,
+                        summary      = st.session_state["report_summary"],
+                        alerts       = st.session_state.get("risk_alerts", []),
+                        analysis_text= st.session_state["gemini_analysis"],
+                        sym          = st.session_state["report_sym"],
+                    )
+                    st.download_button(
+                        label     = "📄 Baixar PDF",
+                        data      = pdf_bytes,
+                        file_name = f"{platform.lower().replace(' ', '_')}_relatorio.pdf",
+                        mime      = "application/pdf",
+                        use_container_width=True,
+                    )
+                except Exception as e:
+                    st.error(f"Erro ao gerar PDF: {e}")
+
+        # ── Botão PPTX ─────────────────────────────────────────────────────
+        with col_pptx:
+            with st.spinner("Gerando PPTX…"):
+                try:
+                    pptx_bytes = generate_pptx(
+                        platform     = platform,
+                        summary      = st.session_state["report_summary"],
+                        alerts       = st.session_state.get("risk_alerts", []),
+                        analysis_text= st.session_state["gemini_analysis"],
+                        sym          = st.session_state["report_sym"],
+                    )
+                    st.download_button(
+                        label     = "📊 Baixar PPTX",
+                        data      = pptx_bytes,
+                        file_name = f"{platform.lower().replace(' ', '_')}_apresentacao.pptx",
+                        mime      = "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                        use_container_width=True,
+                    )
+                except Exception as e:
+                    st.error(f"Erro ao gerar PPTX: {e}")
+    # ── [fim REGRA 2 — seção de exportação] ───────────────────────────────────
 
 else:
 
