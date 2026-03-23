@@ -268,6 +268,138 @@ def load_csv(file) -> pd.DataFrame:
             continue
     raise ValueError("Não foi possível decodificar o arquivo CSV.")
 
+# Regra 2: cada plataforma tem nomes de colunas distintos. Esta função mapeia
+# tudo para o padrão interno único usado pelos gráficos e cálculos de KPI.
+# Adicionar novas plataformas no futuro = apenas um novo bloco de mapeamento.
+
+# Mapeamento Google Ads → padrão interno
+# Chave: nome da coluna do CSV (lowercase+underscore), Valor: nome interno
+GOOGLE_ADS_COLUMN_MAP: dict[str, str] = {
+    # Campanha
+    "campaign":                "campaign_name",
+    "campanha":                "campaign_name",
+    # Impressões
+    "impr.":                   "impressions",
+    "impressões":              "impressions",
+    "impressions":             "impressions",
+    # Cliques
+    "clicks":                  "clicks",
+    "cliques":                 "clicks",
+    # Investimento
+    "cost":                    "spend",
+    "custo":                   "spend",
+    "cost_(brl)":              "spend",
+    "custo_(brl)":             "spend",
+    "cost_(usd)":              "spend",
+    # CTR
+    "ctr":                     "ctr",
+    # CPC médio
+    "avg._cpc":                "cpc",
+    "cpc_médio":               "cpc",
+    "avg._cpc_(brl)":          "cpc",
+    # CPM
+    "avg._cpm":                "cpm",
+    "cpm_médio":               "cpm",
+    # Conversões
+    "conversions":             "conversions",
+    "conversões":              "conversions",
+    # Valor das conversões (para ROAS)
+    "conv._value":             "conversion_values",
+    "valor_conv.":             "conversion_values",
+    "all_conv._value":         "conversion_values",
+    # Alcance (Google não exporta reach diretamente)
+    "reach":                   "reach",
+    # Ad / grupo de anúncios
+    "ad_group":                "adset_name",
+    "grupo_de_anúncios":       "adset_name",
+    "ad":                      "ad_name",
+    "anúncio":                 "ad_name",
+    # Quota de impressão (específico Google)
+    "search_impr._share":      "impression_share",
+    # Data (Google exporta como "Day", "Week", "Month")
+    "day":                     "date",
+    "dia":                     "date",
+    "week":                    "week",
+    "month":                   "month",
+}
+
+# Meta Ads já usa nomes padrão; mapeamento identidade apenas para os aliases
+META_ADS_COLUMN_MAP: dict[str, str] = {
+    # Aliases PT-BR que podem vir no export localizado
+    "campanha":            "campaign_name",
+    "investimento":        "spend",
+    "impressões":          "impressions",
+    "cliques":             "clicks",
+    "alcance":             "reach",
+    "conversões":          "conversions",
+    "frequência":          "frequency",
+    "nome_do_anúncio":     "ad_name",
+    "conjunto_de_anúncios":"adset_name",
+}
+
+
+def normalize_columns(df: pd.DataFrame, platform: str) -> pd.DataFrame:
+    """
+    Aplica o mapeamento de colunas da plataforma selecionada para o padrão
+    interno. Colunas não mapeadas são mantidas intactas.
+    """
+    col_map = GOOGLE_ADS_COLUMN_MAP if platform == "Google Ads" else META_ADS_COLUMN_MAP
+    # Normaliza os nomes atuais do df para lowercase+underscore antes de comparar
+    rename = {col: col_map[col] for col in df.columns if col in col_map}
+    df = df.rename(columns=rename)
+    return df
+
+# Regra 3: o Google Ads exporta uma linha de título do relatório no topo e
+# uma linha de "Total" no final. Ambas precisam ser removidas antes do parse
+# para não contaminar os dados numéricos.
+
+def clean_google_ads_csv(file) -> pd.DataFrame:
+    """
+    Lê o CSV do Google Ads ignorando linhas de cabeçalho extras (relatório
+    gerado pelo Google tem 2 linhas antes do header real) e remove a linha
+    de totais no final.
+    """
+    for enc in ("utf-8", "utf-8-sig", "latin-1", "cp1252"):
+        try:
+            file.seek(0)
+            raw = file.read().decode(enc)
+            lines = raw.splitlines()
+
+            # Encontra a linha do header real: é a primeira linha que
+            # contenha "Campaign" ou "Campanha" (case-insensitive).
+            header_idx = 0
+            for i, line in enumerate(lines):
+                lower = line.lower()
+                if "campaign" in lower or "campanha" in lower or "impr" in lower:
+                    header_idx = i
+                    break
+
+            # Reconstrói o CSV a partir do header real
+            clean = "\n".join(lines[header_idx:])
+            import io as _io
+            df = pd.read_csv(_io.StringIO(clean))
+            df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
+
+            # Remove linhas de total: onde a coluna de campanha é "total"
+            # (Google Ads exporta "Total" em PT e EN)
+            camp_col = next(
+                (c for c in df.columns if c in ("campaign", "campanha", "campaign_name")),
+                None,
+            )
+            if camp_col:
+                df = df[~df[camp_col].astype(str).str.strip().str.lower().isin(
+                    ["total", "totals", "grand total", "total geral"]
+                )]
+
+            # Remove linhas completamente vazias
+            df = df.dropna(how="all").reset_index(drop=True)
+            return df
+
+        except Exception:
+            continue
+
+    raise ValueError("Não foi possível decodificar o CSV do Google Ads.")
+
 def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     """Clean and derive metrics."""
     # Numeric coercion
@@ -334,10 +466,29 @@ def build_summary(df: pd.DataFrame) -> dict:
 
     return {k: v for k, v in s.items() if v is not None}
 
+# Regra 4: a plataforma é injetada no prompt para que o Gemini assuma o papel
+# correto de especialista e use a nomenclatura certa (ex: "Google Ads Manager"
+# vs "Meta Ads Manager" nas recomendações de implementação).
 
-def build_prompt(summary: dict, user_goal: str, currency: str) -> str:
+def build_prompt(summary: dict, user_goal: str, currency: str, platform: str) -> str:
     summary_json = json.dumps(summary, ensure_ascii=False, indent=2)
-    return f"""Você é um especialista sênior em performance de mídia paga com foco em Meta Ads (Facebook/Instagram). Analise os dados abaixo e forneça uma análise aprofundada e acionável em português.
+
+    # Textos que variam por plataforma
+    platform_role = (
+        "Meta Ads (Facebook/Instagram)"
+        if platform == "Meta Ads"
+        else "Google Ads (Search, Display, Performance Max)"
+    )
+    platform_manager = (
+        "Meta Ads Manager"
+        if platform == "Meta Ads"
+        else "Google Ads Manager / Editor"
+    )
+
+    return f"""Você é um especialista sênior em performance de mídia paga com foco em {platform_role}. Analise os dados abaixo e forneça uma análise aprofundada e acionável em português.
+
+## PLATAFORMA
+{platform} — use terminologia, benchmarks e recomendações específicos desta plataforma.
 
 ## DADOS DOS ANÚNCIOS
 ```json
@@ -356,16 +507,16 @@ def build_prompt(summary: dict, user_goal: str, currency: str) -> str:
 Avalie o desempenho geral da conta: volume de investimento, alcance, engajamento e eficiência de custo. Seja direto e específico com os números.
 
 ### 🏆 Pontos Fortes
-Liste de 2 a 4 pontos positivos concretos (com métricas), explicando por que são bons resultados.
+Liste de 2 a 4 pontos positivos concretos (com métricas), explicando por que são bons resultados para {platform}.
 
 ### ⚠️ Alertas & Problemas
-Identifique de 2 a 4 problemas críticos ou métricas abaixo do ideal, com benchmarks do setor para comparação.
+Identifique de 2 a 4 problemas críticos ou métricas abaixo do ideal, com benchmarks do setor para {platform} como comparação.
 
 ### 🎯 Recomendações Prioritárias
 Forneça de 3 a 5 ações específicas e priorizadas (da mais urgente para a menos urgente). Cada ação deve incluir:
 - O que fazer
 - Por que fazer (impacto esperado)
-- Como implementar (passos concretos no Meta Ads Manager)
+- Como implementar (passos concretos no {platform_manager})
 
 ### 📈 Projeção de Oportunidade
 Com base nos dados, estime o potencial de melhoria se as principais recomendações forem implementadas (ex.: redução de CPC, aumento de ROAS, etc.).
@@ -382,7 +533,7 @@ def run_gemini_analysis(api_key: str, prompt: str, model_name: str) -> str:
     return response.text
 
 
-# ── Chart theme ───────────────────────────────────────────────────────────────
+# Chart theme
 CHART_THEME = dict(
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(18,18,26,0.6)",
@@ -591,11 +742,22 @@ def chart_funnel(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
+# Sidebar
 with st.sidebar:
     st.markdown("### ⚙️ Configuração")
     st.markdown("---")
 
+    # Regra 1: st.sidebar.radio com as duas plataformas suportadas.
+    # A variável `platform` controla o mapeamento de colunas, a limpeza do
+    # CSV e o papel assumido pelo Gemini no prompt.
+    platform = st.radio(
+        "Escolha a Plataforma",
+        options=["Meta Ads", "Google Ads"],
+        horizontal=True,
+        help="Selecione a origem do CSV para normalização automática das colunas.",
+    )
+    st.markdown("---")
+ 
     api_key = st.text_input(
         "🔑 Gemini API Key",
         type="password",
@@ -622,36 +784,67 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    st.markdown("""
-    <div style='font-family: Space Mono, monospace; font-size: 0.65rem; color: #6b6880; line-height: 1.8'>
-    📋 <b>Colunas suportadas:</b><br>
-    campaign_name · impressions<br>
-    clicks · spend · reach<br>
-    ctr · cpc · cpm · roas<br>
-    conversions · frequency<br>
-    ad_name · adset_name
-    </div>
-    """, unsafe_allow_html=True)
+    if platform == "Meta Ads":
+        st.markdown("""
+        <div style='font-family: Space Mono, monospace; font-size: 0.65rem; color: #6b6880; line-height: 1.8'>
+        📋 <b>Colunas Meta Ads:</b><br>
+        campaign_name · impressions<br>
+        clicks · spend · reach<br>
+        ctr · cpc · cpm · roas<br>
+        conversions · frequency<br>
+        ad_name · adset_name
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div style='font-family: Space Mono, monospace; font-size: 0.65rem; color: #6b6880; line-height: 1.8'>
+        📋 <b>Colunas Google Ads:</b><br>
+        Campaign / Campanha<br>
+        Impr. / Impressões<br>
+        Clicks / Cliques<br>
+        Cost / Custo<br>
+        CTR · Avg. CPC / CPC médio<br>
+        Conversions / Conversões<br>
+        Conv. value / Valor conv.<br>
+        Search Impr. share
+        </div>
+        """, unsafe_allow_html=True)
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-st.markdown("""
+# Main
+platform_icon = "🟦" if platform == "Meta Ads" else "🟥"
+platform_label = platform
+
+st.markdown(f"""
 <div class="hero-header">
-    <h1>Meta Ads AI Analyzer</h1>
-    <p>Powered by Google Gemini · Diagnóstico inteligente de performance</p>
+    <h1>{platform_icon} Marketing Digital Hub</h1>
+    <p>Powered by Google Gemini · Analisando: <strong>{platform_label}</strong></p>
 </div>
 """, unsafe_allow_html=True)
 
+upload_hint = (
+    "Arraste ou selecione o CSV exportado do Meta Ads Manager"
+    if platform == "Meta Ads"
+    else "Arraste ou selecione o CSV exportado do Google Ads (Relatórios → Baixar → CSV)"
+)
+
 uploaded_file = st.file_uploader(
-    "Arraste ou selecione o CSV exportado do Meta Ads Manager",
+    upload_hint,
     type=["csv"],
     label_visibility="visible",
 )
 
 if uploaded_file:
     try:
-        df = load_csv(uploaded_file)
+        # Meta Ads usa o loader genérico original.
+        if platform == "Google Ads":
+            df = clean_google_ads_csv(uploaded_file)
+        else:
+            df = load_csv(uploaded_file)
+
+        df = normalize_columns(df, platform)
         df = preprocess(df)
+
     except Exception as e:
         st.error(f"Erro ao carregar CSV: {e}")
         st.stop()
@@ -761,7 +954,7 @@ if uploaded_file:
         else:
             summary = build_summary(df)
             goal    = user_goal or "Maximizar o desempenho geral das campanhas e reduzir custos."
-            prompt  = build_prompt(summary, goal, currency)
+            prompt  = build_prompt(summary, goal, currency, platform)
 
             with st.spinner("Gemini está analisando seus dados…"):
                 try:
@@ -774,19 +967,32 @@ if uploaded_file:
                     st.markdown(analysis)
                     st.markdown("</div>", unsafe_allow_html=True)
 
-                    # Download
+                    download_name = (
+                        "meta_ads_analysis.txt"
+                        if platform == "Meta Ads"
+                        else "google_ads_analysis.txt"
+                    )
                     st.download_button(
                         label="⬇️ Baixar análise (.txt)",
                         data=analysis.encode("utf-8"),
-                        file_name="meta_ads_analysis.txt",
+                        file_name=download_name,
                         mime="text/plain",
                     )
                 except Exception as e:
                     st.error(f"Erro na API do Gemini: {e}")
 
 else:
-    # Empty state
-    st.markdown("""
+
+    if platform == "Meta Ads":
+        hint_platform = "Meta Ads Manager"
+        hint_path     = "Relatórios → Exportar → Formato CSV"
+        hint_cols     = "Campanha · Impressões · Cliques · Investimento · CTR"
+    else:
+        hint_platform = "Google Ads"
+        hint_path     = "Relatórios → Baixar ícone → CSV"
+        hint_cols     = "Campaign · Impr. · Clicks · Cost · CTR · Conversions"
+
+    st.markdown(f"""
     <div style="
         text-align: center;
         padding: 4rem 2rem;
@@ -799,10 +1005,10 @@ else:
     ">
         <div style="font-size: 3rem; margin-bottom: 1rem;">📂</div>
         <div>Faça upload de um CSV exportado do</div>
-        <div style="color: #7c6aff; font-weight: 700; margin-top: 0.3rem;">Meta Ads Manager</div>
+        <div style="color: #7c6aff; font-weight: 700; margin-top: 0.3rem;">{hint_platform}</div>
         <div style="margin-top: 1rem; font-size: 0.72rem; line-height: 1.8; color: #4a4860">
-            Relatórios → Exportar → Formato CSV<br>
-            Inclua: Campanha · Impressões · Cliques · Investimento · CTR
+            {hint_path}<br>
+            Inclua: {hint_cols}
         </div>
     </div>
     """, unsafe_allow_html=True)
