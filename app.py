@@ -376,7 +376,8 @@ Seja direto, técnico e evite generalizações. Use os números reais dos dados 
 
 def run_gemini_analysis(api_key: str, prompt: str, model_name: str) -> str:
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_name)
+    modelo_oficial = "gemini-2.5-flash"
+    model = genai.GenerativeModel(modelo_oficial)
     response = model.generate_content(prompt)
     return response.text
 
@@ -604,7 +605,7 @@ with st.sidebar:
 
     model_choice = st.selectbox(
         "🤖 Modelo Gemini",
-        ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash"],
+        ["gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.5-flash"],
         index=1,
     )
 
