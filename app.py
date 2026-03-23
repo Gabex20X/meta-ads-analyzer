@@ -521,7 +521,7 @@ def chart_roas_cpc(df_t: pd.DataFrame, sym: str) -> go.Figure:
     return fig
 
 
-def chart_spend_by_campaign(df: pd.DataFrame, sym: str) -> go.Figure:
+def chart_spend_by_campaign(df: pd.DataFrame, sym: str):
     if "campaign_name" not in df.columns or "spend" not in df.columns:
         return None
     grp = (
@@ -542,12 +542,17 @@ def chart_spend_by_campaign(df: pd.DataFrame, sym: str) -> go.Figure:
         ),
         hovertemplate=f"<b>%{{y}}</b><br>Investimento: {sym} %{{x:,.2f}}<extra></extra>",
     ))
+    
+    try:
+        fig.update_layout(**CHART_THEME)
+    except:
+        pass 
+    
     fig.update_layout(
         title=dict(text="💸 Investimento por Campanha", font=dict(size=15)),
-        **CHART_THEME,
         yaxis=dict(tickfont=dict(size=10), gridcolor="#2a2a3a"),
         xaxis=dict(tickfont=dict(size=11), gridcolor="#2a2a3a"),
-        height=max(300, len(grp) * 42),
+        height=int(max(300, len(grp) * 42)), 
     )
     return fig
 
