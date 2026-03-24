@@ -8,14 +8,11 @@ import json
 import io
 import os
 from datetime import datetime
-
-# ── [REGRA 2] Importações para exportação PDF e PPTX ─────────────────────────
 from fpdf import FPDF                              # fpdf2 — suporte UTF-8 nativo
 from pptx import Presentation                      # python-pptx
 from pptx.util import Inches, Pt, Emu
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
-# ─────────────────────────────────────────────────────────────────────────────
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -609,10 +606,8 @@ def run_stop_loss(df: pd.DataFrame, sym: str) -> list[dict]:
                 })
 
     return alerts
-# ── [fim REGRA 1] ─────────────────────────────────────────────────────────────
 
-
-# ── [REGRA 2] Geradores de relatório — PDF e PPTX ────────────────────────────
+#  Geradores de relatório — PDF e PPTX ────────────────────────────
 
 def _kpi_lines(summary: dict, sym: str) -> list[str]:
     """Formata os KPIs do summary como linhas de texto simples para relatórios."""
@@ -647,38 +642,48 @@ def generate_pdf(
       - Resumo dos KPIs
       - Alertas do Stop Loss
       - Análise estratégica completa do Gemini
-    Retorna os bytes do PDF prontos para st.download_button.
+
+    [REGRA 1 — CORREÇÃO] Usa fontes nativas do FPDF (Helvetica) em vez de
+    DejaVuSans.ttf, que não existe no Streamlit Cloud. Todo texto passa pela
+    função _safe() que sanitiza caracteres fora do latin-1 com replace, evitando
+    UnicodeEncodeError com acentos do português.
     """
 
-    class UTF8PDF(FPDF):
-        """FPDF com suporte a caracteres UTF-8 via fonte DejaVu embutida."""
+    # ── [REGRA 1] Sanitizador latin-1 ──────────────────────────────────────
+    # fpdf2 com fonte embutida usa latin-1 internamente. Caracteres fora do
+    # repertório (emojis, alguns símbolos Unicode) são substituídos por '?'.
+    def _safe(text: str) -> str:
+        return text.encode("latin-1", "replace").decode("latin-1")
+
+    class NativePDF(FPDF):
+        """FPDF com fontes nativas — sem dependência de arquivos .ttf externos."""
         def header(self):
-            # Barra de topo colorida
             self.set_fill_color(124, 106, 255)   # roxo #7c6aff
             self.rect(0, 0, 210, 8, "F")
             self.ln(10)
 
         def footer(self):
             self.set_y(-15)
-            self.set_font("DejaVu", size=8)
+            self.set_font("Helvetica", size=8)
             self.set_text_color(150, 150, 170)
-            self.cell(0, 10, f"Marketing Digital Hub  ·  {platform}  ·  Página {self.page_no()}", align="C")
+            self.cell(0, 10, _safe(
+                f"Marketing Digital Hub  |  {platform}  |  Pagina {self.page_no()}"
+            ), align="C")
 
-    pdf = UTF8PDF()
-    # fpdf2: adiciona fonte com suporte Unicode (DejaVu está embutida)
-    pdf.add_font("DejaVu", fname="DejaVuSans.ttf")
-    pdf.add_font("DejaVu", style="B", fname="DejaVuSans-Bold.ttf")
+    pdf = NativePDF()
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
 
     # ── Título ──
-    pdf.set_font("DejaVu", style="B", size=22)
+    pdf.set_font("Helvetica", style="B", size=22)
     pdf.set_text_color(124, 106, 255)
-    pdf.cell(0, 12, "Marketing Digital Hub", ln=True, align="C")
+    pdf.cell(0, 12, _safe("Marketing Digital Hub"), ln=True, align="C")
 
-    pdf.set_font("DejaVu", size=11)
+    pdf.set_font("Helvetica", size=11)
     pdf.set_text_color(107, 104, 128)
-    pdf.cell(0, 7, f"Plataforma: {platform}  ·  Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=True, align="C")
+    pdf.cell(0, 7, _safe(
+        f"Plataforma: {platform}  |  Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+    ), ln=True, align="C")
     pdf.ln(6)
 
     # ── Linha separadora ──
@@ -687,56 +692,62 @@ def generate_pdf(
     pdf.ln(6)
 
     # ── KPIs ──
-    pdf.set_font("DejaVu", style="B", size=13)
-    pdf.set_text_color(232, 230, 255)
-    pdf.cell(0, 8, "Resumo de KPIs", ln=True)
+    pdf.set_font("Helvetica", style="B", size=13)
+    pdf.set_text_color(50, 50, 80)
+    pdf.cell(0, 8, _safe("Resumo de KPIs"), ln=True)
     pdf.ln(2)
 
     kpi_lines = _kpi_lines(summary, sym)
-    pdf.set_font("DejaVu", size=10)
-    pdf.set_text_color(200, 198, 232)
+    pdf.set_font("Helvetica", size=10)
+    pdf.set_text_color(60, 60, 90)
     for i, line in enumerate(kpi_lines):
-        # Duas colunas
         if i % 2 == 0:
-            pdf.cell(95, 7, line)
+            pdf.cell(95, 7, _safe(line))
         else:
-            pdf.cell(95, 7, line, ln=True)
+            pdf.cell(95, 7, _safe(line), ln=True)
     if len(kpi_lines) % 2 != 0:
         pdf.ln(7)
     pdf.ln(5)
 
     # ── Stop Loss ──
-    pdf.set_font("DejaVu", style="B", size=13)
-    pdf.set_text_color(232, 230, 255)
-    pdf.cell(0, 8, "Diagnostico de Risco (Stop Loss)", ln=True)
+    pdf.set_font("Helvetica", style="B", size=13)
+    pdf.set_text_color(50, 50, 80)
+    pdf.cell(0, 8, _safe("Diagnostico de Risco (Stop Loss)"), ln=True)
     pdf.ln(2)
 
-    pdf.set_font("DejaVu", size=10)
+    pdf.set_font("Helvetica", size=10)
     if not alerts:
-        pdf.set_text_color(79, 255, 176)   # verde #4fffb0
-        pdf.multi_cell(0, 6, "Todas as campanhas estao dentro dos parametros saudaveis. Nenhum alerta de risco detectado.")
+        pdf.set_text_color(30, 160, 100)
+        pdf.multi_cell(0, 6, _safe(
+            "Todas as campanhas estao dentro dos parametros saudaveis. "
+            "Nenhum alerta de risco detectado."
+        ))
     else:
         for alert in alerts:
-            color = (255, 79, 106) if alert["level"] == "error" else (255, 204, 79)
+            color = (180, 40, 60) if alert["level"] == "error" else (160, 120, 10)
             pdf.set_text_color(*color)
-            # Remove markdown bold markers para o PDF
             clean_msg = alert["msg"].replace("**", "").replace("*", "")
             prefix = "[CRITICO]" if alert["level"] == "error" else "[ATENCAO]"
-            pdf.multi_cell(0, 6, f"{prefix} {alert['campaign']}: {clean_msg}")
+            pdf.multi_cell(0, 6, _safe(f"{prefix} {alert['campaign']}: {clean_msg}"))
             pdf.ln(1)
     pdf.ln(5)
 
     # ── Análise Gemini ──
-    pdf.set_font("DejaVu", style="B", size=13)
-    pdf.set_text_color(232, 230, 255)
-    pdf.cell(0, 8, "Analise Estrategica — Gemini AI", ln=True)
+    pdf.set_font("Helvetica", style="B", size=13)
+    pdf.set_text_color(50, 50, 80)
+    pdf.cell(0, 8, _safe("Analise Estrategica - Gemini AI"), ln=True)
     pdf.ln(2)
 
-    pdf.set_font("DejaVu", size=9)
-    pdf.set_text_color(200, 198, 232)
-    # Remove emojis e formatação markdown pesada para compatibilidade PDF
-    clean_analysis = analysis_text.replace("###", "").replace("##", "").replace("**", "")
-    pdf.multi_cell(0, 5.5, clean_analysis)
+    pdf.set_font("Helvetica", size=9)
+    pdf.set_text_color(60, 60, 90)
+    clean_analysis = (
+        analysis_text
+        .replace("###", "")
+        .replace("##", "")
+        .replace("**", "")
+        .replace("*", "")
+    )
+    pdf.multi_cell(0, 5.5, _safe(clean_analysis))
 
     return bytes(pdf.output())
 
@@ -747,145 +758,232 @@ def generate_pptx(
     alerts: list[dict],
     analysis_text: str,
     sym: str,
+    figures: dict | None = None,
 ) -> bytes:
     """
-    Gera uma apresentação PPTX com 3 slides:
-      - Slide 1: Capa com plataforma e data
-      - Slide 2: KPIs e alertas de Stop Loss
-      - Slide 3: Análise estratégica do Gemini
-    Retorna os bytes do PPTX prontos para st.download_button.
+    Apresentação PPTX Premium — estrutura de slides:
+      Slide 1  : Capa
+      Slide 2  : KPIs & Stop Loss
+      Slides 3+: Um slide por gráfico Plotly (exportado via kaleido como PNG)
+      Slides N+: Um slide por tópico da análise do Gemini (quebrado por ###)
+
+    [REGRA 3] Melhorias:
+    - kaleido exporta cada figura Plotly como PNG e insere no slide via add_picture
+    - O texto do Gemini é dividido pelos cabeçalhos ### em seções independentes,
+      cada uma recebendo seu próprio slide em vez de um texto gigante colado
     """
+    import tempfile, re
+
     prs = Presentation()
     prs.slide_width  = Inches(13.33)
     prs.slide_height = Inches(7.5)
 
-    # Paleta de cores
-    C_BG      = RGBColor(0x0a, 0x0a, 0x0f)   # #0a0a0f
-    C_SURFACE = RGBColor(0x12, 0x12, 0x1a)   # #12121a
-    C_ACCENT  = RGBColor(0x7c, 0x6a, 0xff)   # #7c6aff
-    C_ACCENT2 = RGBColor(0xff, 0x6a, 0x9b)   # #ff6a9b
-    C_TEXT    = RGBColor(0xe8, 0xe6, 0xff)   # #e8e6ff
-    C_MUTED   = RGBColor(0x6b, 0x68, 0x80)   # #6b6880
-    C_SUCCESS = RGBColor(0x4f, 0xff, 0xb0)   # #4fffb0
-    C_ERROR   = RGBColor(0xff, 0x4f, 0x6a)   # #ff4f6a
-    C_WARN    = RGBColor(0xff, 0xcc, 0x4f)   # #ffcc4f
+    C_BG      = RGBColor(0x0a, 0x0a, 0x0f)
+    C_SURFACE = RGBColor(0x12, 0x12, 0x1a)
+    C_ACCENT  = RGBColor(0x7c, 0x6a, 0xff)
+    C_ACCENT2 = RGBColor(0xff, 0x6a, 0x9b)
+    C_TEXT    = RGBColor(0xe8, 0xe6, 0xff)
+    C_MUTED   = RGBColor(0x6b, 0x68, 0x80)
+    C_SUCCESS = RGBColor(0x4f, 0xff, 0xb0)
+    C_ERROR   = RGBColor(0xff, 0x4f, 0x6a)
+    C_WARN    = RGBColor(0xff, 0xcc, 0x4f)
 
-    blank_layout = prs.slide_layouts[6]  # layout em branco
+    blank = prs.slide_layouts[6]
 
-    def add_rect(slide, l, t, w, h, fill_rgb, alpha=None):
-        shape = slide.shapes.add_shape(1, Inches(l), Inches(t), Inches(w), Inches(h))
-        shape.line.fill.background()
-        shape.fill.solid()
-        shape.fill.fore_color.rgb = fill_rgb
-        return shape
+    def bg(slide):
+        """Aplica fundo escuro padrão + barra de topo roxa."""
+        sh = slide.shapes.add_shape(1, 0, 0, prs.slide_width, prs.slide_height)
+        sh.line.fill.background()
+        sh.fill.solid()
+        sh.fill.fore_color.rgb = C_BG
+        bar = slide.shapes.add_shape(1, 0, 0, prs.slide_width, Inches(0.09))
+        bar.line.fill.background()
+        bar.fill.solid()
+        bar.fill.fore_color.rgb = C_ACCENT
 
-    def add_text_box(slide, text, l, t, w, h, size=14, bold=False, color=None, align=PP_ALIGN.LEFT, wrap=True):
-        txb = slide.shapes.add_textbox(Inches(l), Inches(t), Inches(w), Inches(h))
-        txb.word_wrap = wrap
-        tf = txb.text_frame
-        tf.word_wrap = wrap
+    def txb(slide, text, l, t, w, h, size=12, bold=False, color=None,
+            align=PP_ALIGN.LEFT, italic=False):
+        shape = slide.shapes.add_textbox(Inches(l), Inches(t), Inches(w), Inches(h))
+        shape.word_wrap = True
+        tf = shape.text_frame
+        tf.word_wrap = True
         p = tf.paragraphs[0]
         p.alignment = align
         run = p.add_run()
         run.text = text
-        run.font.size = Pt(size)
-        run.font.bold = bold
+        run.font.size  = Pt(size)
+        run.font.bold  = bold
+        run.font.italic = italic
         run.font.color.rgb = color or C_TEXT
-        return txb
+        return shape
+
+    def add_slide_number(slide, n: int):
+        txb(slide, str(n), 12.7, 7.1, 0.5, 0.3, size=8, color=C_MUTED,
+            align=PP_ALIGN.RIGHT)
 
     # ────────────────────────────────────────────────────────────────────────
     # SLIDE 1 — Capa
     # ────────────────────────────────────────────────────────────────────────
-    s1 = prs.slides.add_slide(blank_layout)
-    add_rect(s1, 0, 0, 13.33, 7.5, C_BG)                      # fundo escuro
-    add_rect(s1, 0, 0, 13.33, 0.12, C_ACCENT)                  # barra topo roxa
-    add_rect(s1, 0, 7.38, 13.33, 0.12, C_ACCENT2)              # barra base rosa
-    add_rect(s1, 5.5, 2.5, 2.33, 0.06, C_ACCENT)               # linha decorativa
+    s1 = prs.slides.add_slide(blank)
+    bg(s1)
+    # Barra de base rosa
+    b2 = s1.shapes.add_shape(1, 0, Inches(7.4), prs.slide_width, Inches(0.1))
+    b2.line.fill.background(); b2.fill.solid(); b2.fill.fore_color.rgb = C_ACCENT2
+    # Linha decorativa central
+    ln = s1.shapes.add_shape(1, Inches(5.16), Inches(2.6), Inches(3.0), Inches(0.04))
+    ln.line.fill.background(); ln.fill.solid(); ln.fill.fore_color.rgb = C_ACCENT
 
-    add_text_box(s1, "Marketing Digital Hub", 1, 1.6, 11.33, 1.2,
-                 size=40, bold=True, color=C_ACCENT, align=PP_ALIGN.CENTER)
-    add_text_box(s1, f"Plataforma: {platform}", 1, 2.9, 11.33, 0.7,
-                 size=20, bold=False, color=C_TEXT, align=PP_ALIGN.CENTER)
-    add_text_box(s1, "Relatório de Performance com Diagnóstico de Risco", 1, 3.55, 11.33, 0.6,
-                 size=14, color=C_MUTED, align=PP_ALIGN.CENTER)
-    add_text_box(s1, f"Gerado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}", 1, 6.5, 11.33, 0.5,
-                 size=10, color=C_MUTED, align=PP_ALIGN.CENTER)
+    txb(s1, "Marketing Digital Hub", 0.5, 1.4, 12.33, 1.1,
+        size=44, bold=True, color=C_ACCENT, align=PP_ALIGN.CENTER)
+    txb(s1, f"Plataforma: {platform}", 0.5, 2.75, 12.33, 0.6,
+        size=22, color=C_TEXT, align=PP_ALIGN.CENTER)
+    txb(s1, "Relatorio de Performance  |  Gestao de Risco  |  Analise Gemini AI",
+        0.5, 3.4, 12.33, 0.5, size=13, color=C_MUTED, align=PP_ALIGN.CENTER)
+    txb(s1, f"Gerado em {datetime.now().strftime('%d/%m/%Y  as  %H:%M')}",
+        0.5, 6.85, 12.33, 0.4, size=10, color=C_MUTED, align=PP_ALIGN.CENTER)
+    add_slide_number(s1, 1)
 
     # ────────────────────────────────────────────────────────────────────────
     # SLIDE 2 — KPIs + Stop Loss
     # ────────────────────────────────────────────────────────────────────────
-    s2 = prs.slides.add_slide(blank_layout)
-    add_rect(s2, 0, 0, 13.33, 7.5, C_BG)
-    add_rect(s2, 0, 0, 13.33, 0.08, C_ACCENT)
+    s2 = prs.slides.add_slide(blank)
+    bg(s2)
+    txb(s2, "KPIs & Diagnostico de Risco (Stop Loss)", 0.4, 0.15, 12, 0.6,
+        size=24, bold=True, color=C_ACCENT)
 
-    add_text_box(s2, "KPIs & Diagnóstico de Risco", 0.4, 0.18, 12, 0.65,
-                 size=22, bold=True, color=C_ACCENT)
-
-    # ── KPI grid (2 colunas) ──
+    # Grid de KPIs — 3 colunas
     kpi_lines = _kpi_lines(summary, sym)
-    col_w, row_h = 5.8, 0.55
-    for idx, line in enumerate(kpi_lines[:10]):   # max 10 KPIs
-        col = idx % 2
-        row = idx // 2
-        bx = 0.4 + col * 6.5
-        by = 1.05 + row * row_h
-        add_rect(s2, bx, by, col_w, row_h - 0.06, C_SURFACE)
-        add_text_box(s2, line, bx + 0.15, by + 0.05, col_w - 0.3, row_h - 0.12,
-                     size=11, color=C_TEXT)
+    col_w, row_h, n_cols = 4.0, 0.55, 3
+    for idx, line in enumerate(kpi_lines[:12]):
+        col_i = idx % n_cols
+        row_i = idx // n_cols
+        bx = 0.4 + col_i * (col_w + 0.15)
+        by = 0.9 + row_i * row_h
+        card = s2.shapes.add_shape(1, Inches(bx), Inches(by), Inches(col_w), Inches(row_h - 0.06))
+        card.line.fill.background(); card.fill.solid(); card.fill.fore_color.rgb = C_SURFACE
+        txb(s2, line, bx + 0.12, by + 0.07, col_w - 0.24, row_h - 0.14, size=10, color=C_TEXT)
 
-    kpi_rows = (min(len(kpi_lines), 10) + 1) // 2
-    alert_y = 1.05 + kpi_rows * row_h + 0.2
+    kpi_rows = (min(len(kpi_lines), 12) + n_cols - 1) // n_cols
+    ay = 0.9 + kpi_rows * row_h + 0.18
 
-    # ── Stop Loss ──
-    add_text_box(s2, "🛑 Diagnóstico de Risco (Stop Loss)", 0.4, alert_y, 12, 0.5,
-                 size=14, bold=True, color=C_ERROR if alerts else C_SUCCESS)
-    alert_y += 0.5
+    # Cabeçalho Stop Loss
+    txb(s2, "Stop Loss — Alertas de Risco", 0.4, ay, 12, 0.42,
+        size=14, bold=True, color=C_ERROR if alerts else C_SUCCESS)
+    ay += 0.42
 
     if not alerts:
-        add_rect(s2, 0.4, alert_y, 12.4, 0.5, RGBColor(0x0d, 0x2b, 0x22))
-        add_text_box(s2, "✅  Todas as campanhas estão dentro dos parâmetros saudáveis.", 0.55, alert_y + 0.05,
-                     12, 0.4, size=11, color=C_SUCCESS)
+        ok = s2.shapes.add_shape(1, Inches(0.4), Inches(ay), Inches(12.4), Inches(0.48))
+        ok.line.fill.background(); ok.fill.solid(); ok.fill.fore_color.rgb = RGBColor(0x0d, 0x2b, 0x22)
+        txb(s2, "Todas as campanhas estao dentro dos parametros saudaveis.",
+            0.55, ay + 0.06, 12, 0.36, size=11, color=C_SUCCESS)
     else:
-        for alert in alerts[:4]:   # max 4 alertas no slide
-            col_bg = RGBColor(0x2b, 0x0d, 0x12) if alert["level"] == "error" else RGBColor(0x2b, 0x24, 0x0d)
-            col_tx = C_ERROR if alert["level"] == "error" else C_WARN
+        for alert in alerts[:5]:
+            ab = RGBColor(0x2b, 0x0d, 0x12) if alert["level"] == "error" else RGBColor(0x2b, 0x24, 0x0d)
+            atx = C_ERROR if alert["level"] == "error" else C_WARN
             clean = alert["msg"].replace("**", "").replace("*", "")
-            add_rect(s2, 0.4, alert_y, 12.4, 0.52, col_bg)
-            add_text_box(s2, clean[:130], 0.55, alert_y + 0.04, 12, 0.44,
-                         size=9, color=col_tx)
-            alert_y += 0.58
+            card = s2.shapes.add_shape(1, Inches(0.4), Inches(ay), Inches(12.4), Inches(0.5))
+            card.line.fill.background(); card.fill.solid(); card.fill.fore_color.rgb = ab
+            txb(s2, f"{alert['campaign']}: {clean[:120]}", 0.55, ay + 0.05, 12, 0.4,
+                size=9, color=atx)
+            ay += 0.56
+    add_slide_number(s2, 2)
 
     # ────────────────────────────────────────────────────────────────────────
-    # SLIDE 3 — Análise Estratégica Gemini
+    # SLIDES 3+ — Um slide por gráfico (exportado com kaleido)
+    # [REGRA 3] fig.to_image(format="png") retorna bytes PNG que são inseridos
+    # diretamente no slide via add_picture, sem gravar em disco.
     # ────────────────────────────────────────────────────────────────────────
-    s3 = prs.slides.add_slide(blank_layout)
-    add_rect(s3, 0, 0, 13.33, 7.5, C_BG)
-    add_rect(s3, 0, 0, 13.33, 0.08, C_ACCENT2)
+    slide_n = 3
+    if figures:
+        for chart_title, fig in figures.items():
+            if fig is None:
+                continue
+            try:
+                # Exporta o gráfico como PNG (requer kaleido instalado)
+                img_bytes = fig.to_image(format="png", width=1200, height=550, scale=1.5)
+                img_stream = io.BytesIO(img_bytes)
 
-    add_text_box(s3, "Análise Estratégica — Gemini AI", 0.4, 0.18, 12, 0.65,
-                 size=22, bold=True, color=C_ACCENT2)
-    add_text_box(s3, f"Plataforma: {platform}", 0.4, 0.78, 12, 0.35,
-                 size=10, color=C_MUTED)
+                sc = prs.slides.add_slide(blank)
+                bg(sc)
+                txb(sc, chart_title, 0.4, 0.15, 12, 0.55, size=20, bold=True, color=C_ACCENT2)
 
-    # Limpa markdown para o PPTX e trunca para caber no slide
-    clean = (analysis_text
-             .replace("###", "")
-             .replace("##", "")
-             .replace("**", "")
-             .replace("*", ""))
-    max_chars = 2200
-    if len(clean) > max_chars:
-        clean = clean[:max_chars] + "\n\n[...] Texto completo disponível no download .txt"
+                # Insere a imagem centralizada abaixo do título
+                sc.shapes.add_picture(
+                    img_stream,
+                    left   = Inches(0.4),
+                    top    = Inches(0.82),
+                    width  = Inches(12.53),
+                    height = Inches(6.4),
+                )
+                add_slide_number(sc, slide_n)
+                slide_n += 1
+            except Exception:
+                # Se kaleido não estiver disponível ou falhar, pula o slide de imagem
+                pass
 
-    add_text_box(s3, clean, 0.4, 1.2, 12.53, 6.0,
-                 size=9, color=C_TEXT, wrap=True)
+    # ────────────────────────────────────────────────────────────────────────
+    # SLIDES finais — Análise do Gemini, um slide por tópico ###
+    # [REGRA 3] Divide o texto pelo separador ### e cria um slide por seção.
+    # Seções muito longas são divididas em sub-slides de ~1800 chars cada.
+    # ────────────────────────────────────────────────────────────────────────
+    MAX_CHARS_PER_SLIDE = 1800
 
-    # ── Salva para bytes ──
+    def _clean_md(text: str) -> str:
+        """Remove markdown e emojis incompatíveis com textbox PPTX."""
+        text = re.sub(r"#{1,3}\s*", "", text)
+        text = text.replace("**", "").replace("*", "")
+        return text.strip()
+
+    # Divide por ### mantendo o cabeçalho na primeira linha do bloco
+    raw_sections = re.split(r"(?=###)", analysis_text)
+    sections: list[tuple[str, str]] = []   # (título, corpo)
+
+    for sec in raw_sections:
+        sec = sec.strip()
+        if not sec:
+            continue
+        lines = sec.splitlines()
+        title_line = lines[0].lstrip("#").strip() if lines else "Analise"
+        body       = "\n".join(lines[1:]).strip()
+        sections.append((title_line, body))
+
+    # Se o Gemini não usou ###, trata o texto como uma seção única
+    if len(sections) <= 1:
+        sections = [("Analise Estrategica — Gemini AI", _clean_md(analysis_text))]
+
+    for sec_title, sec_body in sections:
+        body_clean = _clean_md(sec_body)
+        # Sub-divide seções longas
+        chunks = []
+        while len(body_clean) > MAX_CHARS_PER_SLIDE:
+            cut = body_clean[:MAX_CHARS_PER_SLIDE].rfind("\n")
+            if cut < 200:
+                cut = MAX_CHARS_PER_SLIDE
+            chunks.append(body_clean[:cut])
+            body_clean = body_clean[cut:].lstrip()
+        chunks.append(body_clean)
+
+        for chunk_idx, chunk in enumerate(chunks):
+            sa = prs.slides.add_slide(blank)
+            bg(sa)
+
+            # Título do tópico (parte 2/3 se houver sub-slides)
+            suffix = f"  ({chunk_idx + 1}/{len(chunks)})" if len(chunks) > 1 else ""
+            txb(sa, _clean_md(sec_title) + suffix,
+                0.4, 0.15, 12, 0.58, size=20, bold=True, color=C_ACCENT2)
+
+            # Tag "Gemini AI"
+            txb(sa, "Gemini AI  |  Analise de Performance",
+                0.4, 0.72, 5, 0.3, size=9, italic=True, color=C_MUTED)
+
+            # Corpo do tópico
+            txb(sa, chunk, 0.4, 1.1, 12.5, 6.1, size=10, color=C_TEXT, wrap=True)
+            add_slide_number(sa, slide_n)
+            slide_n += 1
+
     buf = io.BytesIO()
     prs.save(buf)
     return buf.getvalue()
-
-# ── [fim REGRA 2 — funções de exportação] ────────────────────────────────────
 
 
 # Chart theme
@@ -1097,6 +1195,176 @@ def chart_funnel(df: pd.DataFrame) -> go.Figure:
     return fig
 
 
+# Gráficos de performance ──────────────────────────────
+
+def chart_cpa_by_campaign(df: pd.DataFrame, sym: str):
+    """
+    Custo por Conversão (CPA) por campanha — barras verticais.
+    Calcula spend / conversions por campanha, tratando divisão por zero com NaN.
+    Campanhas sem conversão são excluídas (CPA infinito/inválido não tem significado).
+    """
+    if not {"campaign_name", "spend", "conversions"}.issubset(df.columns):
+        return None
+
+    grp = (
+        df.groupby("campaign_name")
+        .agg(spend=("spend", "sum"), conversions=("conversions", "sum"))
+        .reset_index()
+    )
+    # Divide por zero → NaN; depois descarta linhas sem CPA calculável
+    grp["cpa"] = grp["spend"] / grp["conversions"].replace(0, float("nan"))
+    grp = grp.dropna(subset=["cpa"]).sort_values("cpa", ascending=False).head(15)
+
+    if grp.empty:
+        return None
+
+    # Coloração por desempenho: CPA baixo = verde, alto = vermelho
+    cpa_max = grp["cpa"].max()
+    cpa_min = grp["cpa"].min()
+
+    fig = go.Figure(go.Bar(
+        x=grp["campaign_name"],
+        y=grp["cpa"],
+        marker=dict(
+            color=grp["cpa"],
+            colorscale=[
+                [0.0, "#4fffb0"],   # verde  (CPA baixo = bom)
+                [0.5, "#ffcc4f"],   # amarelo
+                [1.0, "#ff4f6a"],   # vermelho (CPA alto = ruim)
+            ],
+            showscale=True,
+            colorbar=dict(
+                title=dict(text=f"CPA ({sym})", font=dict(color="#e8e6ff", size=10)),
+                tickfont=dict(color="#e8e6ff", size=9),
+                thickness=12,
+            ),
+        ),
+        hovertemplate=(
+            "<b>%{x}</b><br>"
+            f"CPA: {sym} %{{y:,.2f}}<br>"
+            "<extra></extra>"
+        ),
+    ))
+    fig.update_layout(
+        title=dict(text=f"🎯 Custo por Conversão (CPA) por Campanha", font=dict(size=15)),
+        **CHART_THEME,
+        xaxis=dict(tickangle=-35, tickfont=dict(size=9), gridcolor="#2a2a3a"),
+        yaxis=dict(title=f"CPA ({sym})", gridcolor="#2a2a3a"),
+        height=420,
+    )
+    return fig
+
+
+def chart_efficiency_scatter(df: pd.DataFrame, sym: str):
+    """
+    Matriz de Eficiência — Scatter Plot por campanha.
+    Eixo X: CPC (Custo por Clique)
+    Eixo Y: Taxa de Conversão (conversions / clicks * 100)
+    Tamanho das bolhas: Investimento (spend)
+    Cor: campanha (discreta)
+    Quadrantes anotados para facilitar leitura executiva.
+    """
+    needed = {"campaign_name", "spend", "cpc", "clicks", "conversions"}
+    if not needed.issubset(df.columns):
+        return None
+
+    grp = (
+        df.groupby("campaign_name")
+        .agg(
+            spend=("spend", "sum"),
+            cpc=("cpc", "mean"),
+            clicks=("clicks", "sum"),
+            conversions=("conversions", "sum"),
+        )
+        .reset_index()
+    )
+    # Taxa de conversão = conversions / clicks * 100; trata divisão por zero
+    grp["conv_rate"] = (
+        grp["conversions"] / grp["clicks"].replace(0, float("nan")) * 100
+    )
+    grp = grp.dropna(subset=["cpc", "conv_rate"])
+
+    if grp.empty:
+        return None
+
+    # Paleta de cores discreta para campanhas
+    palette = [
+        "#7c6aff", "#ff6a9b", "#4fffb0", "#ffcc4f",
+        "#ff9f4f", "#4fc3ff", "#ff4f6a", "#b06aff",
+        "#a0ff6a", "#6affee", "#ff6af0", "#ffd06a",
+    ]
+    colors = [palette[i % len(palette)] for i in range(len(grp))]
+
+    # Tamanho das bolhas: normalizado entre 20 e 80 px
+    spend_min, spend_max = grp["spend"].min(), grp["spend"].max()
+    size_range = spend_max - spend_min if spend_max != spend_min else 1
+    grp["bubble_size"] = 20 + ((grp["spend"] - spend_min) / size_range) * 60
+
+    fig = go.Figure()
+    for i, row in grp.iterrows():
+        fig.add_trace(go.Scatter(
+            x=[row["cpc"]],
+            y=[row["conv_rate"]],
+            mode="markers+text",
+            marker=dict(
+                size=row["bubble_size"],
+                color=colors[i % len(colors)],
+                opacity=0.82,
+                line=dict(width=1.5, color="rgba(255,255,255,0.2)"),
+            ),
+            text=[row["campaign_name"][:18] + ("…" if len(row["campaign_name"]) > 18 else "")],
+            textposition="top center",
+            textfont=dict(size=8, color="#e8e6ff"),
+            name=row["campaign_name"],
+            hovertemplate=(
+                f"<b>{row['campaign_name']}</b><br>"
+                f"CPC: {sym} {row['cpc']:,.2f}<br>"
+                f"Taxa Conv.: {row['conv_rate']:.2f}%<br>"
+                f"Investimento: {sym} {row['spend']:,.2f}<br>"
+                "<extra></extra>"
+            ),
+        ))
+
+    # Linhas de quadrante (medianas)
+    med_cpc      = grp["cpc"].median()
+    med_conv_rate = grp["conv_rate"].median()
+
+    fig.add_vline(x=med_cpc, line=dict(color="#2a2a3a", width=1.5, dash="dot"))
+    fig.add_hline(y=med_conv_rate, line=dict(color="#2a2a3a", width=1.5, dash="dot"))
+
+    # Anotações dos quadrantes
+    x_min, x_max = grp["cpc"].min(), grp["cpc"].max()
+    y_min, y_max = grp["conv_rate"].min(), grp["conv_rate"].max()
+    x_pad = (x_max - x_min) * 0.05 or 0.1
+    y_pad = (y_max - y_min) * 0.05 or 0.1
+
+    quadrants = [
+        (x_min + x_pad, y_max - y_pad, "⭐ ESTRELAS",  "#4fffb0"),   # baixo CPC, alta conv
+        (x_max - x_pad, y_max - y_pad, "⚠️ CAROS",     "#ffcc4f"),   # alto CPC, alta conv
+        (x_min + x_pad, y_min + y_pad, "💤 DORMENTES", "#6b6880"),   # baixo CPC, baixa conv
+        (x_max - x_pad, y_min + y_pad, "🚨 PROBLEMA",  "#ff4f6a"),   # alto CPC, baixa conv
+    ]
+    for qx, qy, label, col in quadrants:
+        fig.add_annotation(
+            x=qx, y=qy, text=label,
+            showarrow=False,
+            font=dict(size=9, color=col),
+            bgcolor="rgba(10,10,15,0.6)",
+            bordercolor=col,
+            borderwidth=1,
+            borderpad=3,
+        )
+
+    fig.update_layout(
+        title=dict(text="🔬 Matriz de Eficiência: CPC vs Taxa de Conversão", font=dict(size=15)),
+        **CHART_THEME,
+        showlegend=False,
+        xaxis=dict(title=f"CPC ({sym})", gridcolor="#2a2a3a"),
+        yaxis=dict(title="Taxa de Conversão (%)", gridcolor="#2a2a3a"),
+        height=480,
+    )
+    return fig
+
 # Sidebar
 with st.sidebar:
     st.markdown("### ⚙️ Configuração")
@@ -1296,7 +1564,30 @@ if uploaded_file:
         if fig_funnel:
             st.plotly_chart(fig_funnel, use_container_width=True, config={"displayModeBar": False})
 
-    # ── [REGRA 1] Stop Loss — Diagnóstico de Risco ────────────────────────
+    # Row 4: CPA por campanha | Matriz de Eficiência ───────────
+    fig_cpa        = chart_cpa_by_campaign(df, sym)
+    fig_efficiency = chart_efficiency_scatter(df, sym)
+
+    if fig_cpa or fig_efficiency:
+        col_e, col_f = st.columns(2)
+        with col_e:
+            if fig_cpa:
+                st.plotly_chart(fig_cpa, use_container_width=True, config={"displayModeBar": False})
+        with col_f:
+            if fig_efficiency:
+                st.plotly_chart(fig_efficiency, use_container_width=True, config={"displayModeBar": False})
+
+    # Armazena as figuras no session_state para o PPTX premium (REGRA 3)
+    # Usa apenas as figuras que existem (dependem das colunas disponíveis)
+    st.session_state["pptx_figures"] = {
+        k: v for k, v in {
+            "Funil de Performance":              fig_funnel,
+            "Investimento por Campanha":         fig_camp,
+            "CPA por Campanha":                  fig_cpa,
+            "Matriz de Eficiencia":              fig_efficiency,
+        }.items() if v is not None
+    }
+
     # Posicionado logo acima da seção de Análise com IA, conforme solicitado.
     # Os alertas são calculados aqui e também armazenados em session_state
     # para que a seção de exportação (mais abaixo) possa acessá-los.
@@ -1328,7 +1619,6 @@ if uploaded_file:
                     st.error(camp_label + alert["msg"])
                 else:
                     st.warning(camp_label + alert["msg"])
-    # ── [fim REGRA 1] ────────────────────────────────────────────────────────
 
     # ── Análise com IA ────────────────────────────────────────────────────────
     st.markdown('<div class="section-title">🤖 Análise com IA</div>', unsafe_allow_html=True)
@@ -1349,7 +1639,6 @@ if uploaded_file:
                 try:
                     analysis = run_gemini_analysis(api_key, prompt, model_choice)
 
-                    # [REGRA 2] Persiste o texto da análise para o gerador de relatórios
                     st.session_state["gemini_analysis"] = analysis
                     st.session_state["report_summary"]  = summary
                     st.session_state["report_sym"]      = sym
@@ -1375,7 +1664,7 @@ if uploaded_file:
                 except Exception as e:
                     st.error(f"Erro na API do Gemini: {e}")
 
-    # ── [REGRA 2] Download de Relatórios (PDF e PPTX) ────────────────────────
+    # Download de Relatórios (PDF e PPTX) ────────────────────────
     # A seção só fica ativa após a análise do Gemini ter sido executada ao
     # menos uma vez (dados armazenados em session_state).
     st.markdown('<div class="section-title">📥 Download de Relatórios</div>', unsafe_allow_html=True)
@@ -1428,6 +1717,7 @@ if uploaded_file:
                         alerts       = st.session_state.get("risk_alerts", []),
                         analysis_text= st.session_state["gemini_analysis"],
                         sym          = st.session_state["report_sym"],
+                        figures      = st.session_state.get("pptx_figures", {}),
                     )
                     st.download_button(
                         label     = "📊 Baixar PPTX",
@@ -1438,7 +1728,6 @@ if uploaded_file:
                     )
                 except Exception as e:
                     st.error(f"Erro ao gerar PPTX: {e}")
-    # ── [fim REGRA 2 — seção de exportação] ───────────────────────────────────
 
 else:
 
