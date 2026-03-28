@@ -1283,12 +1283,6 @@ with st.sidebar:
         help="Obtenha em aistudio.google.com",
     )
 
-    model_choice = st.selectbox(
-        "🤖 Modelo Gemini",
-        ["gemini-1.5-pro", "gemini-2.0-flash", "gemini-2.5-flash"],
-        index=1,
-    )
-
     currency = st.selectbox(
         "💱 Moeda",
         ["BRL (R$)", "USD ($)", "EUR (€)", "GBP (£)"],
@@ -1510,7 +1504,7 @@ if uploaded_file:
 
             with st.spinner("Gemini está analisando seus dados…"):
                 try:
-                    analysis = run_gemini_analysis(api_key, prompt, model_choice)
+                    analysis = run_gemini_analysis(api_key, prompt, "gemini-2.5-flash")
 
                     # [REGRA 2] Persiste o texto da análise para o gerador de relatórios
                     st.session_state["gemini_analysis"] = analysis
