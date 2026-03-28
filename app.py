@@ -781,101 +781,125 @@ def generate_pdf(
     sym: str,
 ) -> bytes:
     """
-    Gera um PDF completo com:
-      - Título e metadados
-      - Resumo dos KPIs
-      - Alertas do Stop Loss
-      - Análise estratégica completa do Gemini
-    Retorna os bytes do PDF prontos para st.download_button.
+    Gera um PDF completo com título, KPIs, alertas Stop Loss e análise Gemini.
+
+    CORREÇÃO (3 regras aplicadas):
+      1. Sem add_font() — zero dependência de arquivos .ttf externos.
+      2. Fontes nativas FPDF apenas: Arial 'B' para títulos, Arial '' para corpo.
+      3. Todo texto passa por _s() antes de cell/multi_cell para garantir
+         compatibilidade latin-1 (acentos PT-BR sem UnicodeEncodeError).
     """
 
-    class UTF8PDF(FPDF):
-        """FPDF com suporte a caracteres UTF-8 via fonte DejaVu embutida."""
+    # ── Regra 3: sanitizador latin-1 ─────────────────────────────────────────
+    # Fontes nativas do FPDF codificam internamente em latin-1. Caracteres
+    # fora desse repertório (emojis, alguns símbolos) são substituídos por '?'.
+    def _s(text: str) -> str:
+        return str(text).encode("latin-1", "replace").decode("latin-1")
+
+    # ── Regra 1 & 2: classe interna sem add_font, só Arial ───────────────────
+    class NativePDF(FPDF):
         def header(self):
-            # Barra de topo colorida
-            self.set_fill_color(124, 106, 255)   # roxo #7c6aff
-            self.rect(0, 0, 210, 8, "F")
+            self.set_fill_color(100, 80, 220)        # roxo sólido
+            self.rect(0, 0, 210, 7, "F")
             self.ln(10)
 
         def footer(self):
             self.set_y(-15)
-            self.set_font("DejaVu", size=8)
-            self.set_text_color(150, 150, 170)
-            self.cell(0, 10, f"Marketing Digital Hub  ·  {platform}  ·  Página {self.page_no()}", align="C")
+            self.set_font("Arial", "", 8)            # Regra 2: Arial nativa
+            self.set_text_color(120, 120, 140)
+            self.cell(
+                0, 10,
+                _s(f"Marketing Digital Hub  |  {platform}  |  Pagina {self.page_no()}"),
+                align="C",
+            )
 
-    pdf = UTF8PDF()
-    # fpdf2: adiciona fonte com suporte Unicode (DejaVu está embutida)
-    pdf.add_font("DejaVu", fname="DejaVuSans.ttf")
-    pdf.add_font("DejaVu", style="B", fname="DejaVuSans-Bold.ttf")
+    pdf = NativePDF()
+    # Regra 1: NÃO há pdf.add_font() — nenhuma linha referenciando .ttf
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
 
-    # ── Título ──
-    pdf.set_font("DejaVu", style="B", size=22)
-    pdf.set_text_color(124, 106, 255)
-    pdf.cell(0, 12, "Marketing Digital Hub", ln=True, align="C")
+    # ── Título ───────────────────────────────────────────────────────────────
+    pdf.set_font("Arial", "B", 22)                   # Regra 2
+    pdf.set_text_color(80, 60, 200)
+    pdf.cell(0, 12, _s("Marketing Digital Hub"), ln=True, align="C")  # Regra 3
 
-    pdf.set_font("DejaVu", size=11)
-    pdf.set_text_color(107, 104, 128)
-    pdf.cell(0, 7, f"Plataforma: {platform}  ·  Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=True, align="C")
+    pdf.set_font("Arial", "", 11)
+    pdf.set_text_color(90, 88, 110)
+    pdf.cell(
+        0, 7,
+        _s(f"Plataforma: {platform}  |  Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}"),
+        ln=True, align="C",
+    )
     pdf.ln(6)
 
-    # ── Linha separadora ──
-    pdf.set_draw_color(42, 42, 58)
+    # ── Linha separadora ─────────────────────────────────────────────────────
+    pdf.set_draw_color(180, 180, 200)
     pdf.line(10, pdf.get_y(), 200, pdf.get_y())
     pdf.ln(6)
 
-    # ── KPIs ──
-    pdf.set_font("DejaVu", style="B", size=13)
-    pdf.set_text_color(232, 230, 255)
-    pdf.cell(0, 8, "Resumo de KPIs", ln=True)
+    # ── KPIs ─────────────────────────────────────────────────────────────────
+    pdf.set_font("Arial", "B", 13)
+    pdf.set_text_color(50, 50, 80)
+    pdf.cell(0, 8, _s("Resumo de KPIs"), ln=True)
     pdf.ln(2)
 
     kpi_lines = _kpi_lines(summary, sym)
-    pdf.set_font("DejaVu", size=10)
-    pdf.set_text_color(200, 198, 232)
+    pdf.set_font("Arial", "", 10)
+    pdf.set_text_color(60, 60, 90)
     for i, line in enumerate(kpi_lines):
-        # Duas colunas
         if i % 2 == 0:
-            pdf.cell(95, 7, line)
+            pdf.cell(95, 7, _s(line))               # Regra 3
         else:
-            pdf.cell(95, 7, line, ln=True)
+            pdf.cell(95, 7, _s(line), ln=True)
     if len(kpi_lines) % 2 != 0:
         pdf.ln(7)
     pdf.ln(5)
 
-    # ── Stop Loss ──
-    pdf.set_font("DejaVu", style="B", size=13)
-    pdf.set_text_color(232, 230, 255)
-    pdf.cell(0, 8, "Diagnostico de Risco (Stop Loss)", ln=True)
+    # ── Stop Loss ─────────────────────────────────────────────────────────────
+    pdf.set_font("Arial", "B", 13)
+    pdf.set_text_color(50, 50, 80)
+    pdf.cell(0, 8, _s("Diagnostico de Risco (Stop Loss)"), ln=True)
     pdf.ln(2)
 
-    pdf.set_font("DejaVu", size=10)
+    pdf.set_font("Arial", "", 10)
     if not alerts:
-        pdf.set_text_color(79, 255, 176)   # verde #4fffb0
-        pdf.multi_cell(0, 6, "Todas as campanhas estao dentro dos parametros saudaveis. Nenhum alerta de risco detectado.")
+        pdf.set_text_color(30, 150, 90)
+        pdf.multi_cell(
+            0, 6,
+            _s("Todas as campanhas estao dentro dos parametros saudaveis. "
+               "Nenhum alerta de risco detectado."),
+        )
     else:
         for alert in alerts:
-            color = (255, 79, 106) if alert["level"] == "error" else (255, 204, 79)
-            pdf.set_text_color(*color)
-            # Remove markdown bold markers para o PDF
+            if alert["level"] == "error":
+                pdf.set_text_color(180, 40, 60)
+            else:
+                pdf.set_text_color(160, 110, 10)
             clean_msg = alert["msg"].replace("**", "").replace("*", "")
             prefix = "[CRITICO]" if alert["level"] == "error" else "[ATENCAO]"
-            pdf.multi_cell(0, 6, f"{prefix} {alert['campaign']}: {clean_msg}")
+            pdf.multi_cell(
+                0, 6,
+                _s(f"{prefix} {alert['campaign']}: {clean_msg}"),  # Regra 3
+            )
             pdf.ln(1)
     pdf.ln(5)
 
-    # ── Análise Gemini ──
-    pdf.set_font("DejaVu", style="B", size=13)
-    pdf.set_text_color(232, 230, 255)
-    pdf.cell(0, 8, "Analise Estrategica — Gemini AI", ln=True)
+    # ── Análise Gemini ────────────────────────────────────────────────────────
+    pdf.set_font("Arial", "B", 13)
+    pdf.set_text_color(50, 50, 80)
+    pdf.cell(0, 8, _s("Analise Estrategica - Gemini AI"), ln=True)
     pdf.ln(2)
 
-    pdf.set_font("DejaVu", size=9)
-    pdf.set_text_color(200, 198, 232)
-    # Remove emojis e formatação markdown pesada para compatibilidade PDF
-    clean_analysis = analysis_text.replace("###", "").replace("##", "").replace("**", "")
-    pdf.multi_cell(0, 5.5, clean_analysis)
+    pdf.set_font("Arial", "", 9)
+    pdf.set_text_color(60, 60, 90)
+    clean_analysis = (
+        analysis_text
+        .replace("###", "")
+        .replace("##", "")
+        .replace("**", "")
+        .replace("*", "")
+    )
+    pdf.multi_cell(0, 5.5, _s(clean_analysis))      # Regra 3
 
     return bytes(pdf.output())
 
