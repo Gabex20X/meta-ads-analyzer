@@ -281,55 +281,94 @@ def load_csv(file) -> pd.DataFrame:
 # tudo para o padrão interno único usado pelos gráficos e cálculos de KPI.
 # Adicionar novas plataformas no futuro = apenas um novo bloco de mapeamento.
 
-# Mapeamento Google Ads → padrão interno
-# Chave: nome da coluna do CSV (lowercase+underscore), Valor: nome interno
+# ── Mapeamento Google Ads → padrão interno ────────────────────────────────────
+# As chaves são os nomes EXATOS que aparecem no CSV exportado do Google Ads
+# em português (PT-BR), após strip() e lowercase. Inclui variantes EN para
+# contas configuradas em inglês.
+#
+# Regra 3 (Mapeamento Real): baseado no CSV oficial exportado pelo Google Ads.
 GOOGLE_ADS_COLUMN_MAP: dict[str, str] = {
-    # Campanha
-    "campaign":                "campaign_name",
-    "campanha":                "campaign_name",
-    # Impressões
-    "impr.":                   "impressions",
-    "impressões":              "impressions",
-    "impressions":             "impressions",
-    # Cliques
-    "clicks":                  "clicks",
-    "cliques":                 "clicks",
-    # Investimento
-    "cost":                    "spend",
-    "custo":                   "spend",
-    "cost_(brl)":              "spend",
-    "custo_(brl)":             "spend",
-    "cost_(usd)":              "spend",
-    # CTR
-    "ctr":                     "ctr",
-    # CPC médio
-    "avg._cpc":                "cpc",
-    "cpc_médio":               "cpc",
-    "avg._cpc_(brl)":          "cpc",
-    # CPM
-    "avg._cpm":                "cpm",
-    "cpm_médio":               "cpm",
-    # Conversões
-    "conversions":             "conversions",
-    "conversões":              "conversions",
-    # Valor das conversões (para ROAS)
-    "conv._value":             "conversion_values",
-    "valor_conv.":             "conversion_values",
-    "all_conv._value":         "conversion_values",
-    # Alcance (Google não exporta reach diretamente)
-    "reach":                   "reach",
-    # Ad / grupo de anúncios
-    "ad_group":                "adset_name",
-    "grupo_de_anúncios":       "adset_name",
-    "ad":                      "ad_name",
-    "anúncio":                 "ad_name",
-    # Quota de impressão (específico Google)
-    "search_impr._share":      "impression_share",
-    # Data (Google exporta como "Day", "Week", "Month")
-    "day":                     "date",
-    "dia":                     "date",
-    "week":                    "week",
-    "month":                   "month",
+    # ── Campanha ──────────────────────────────────────────────────────────
+    "campanha":                  "campaign_name",   # PT-BR oficial
+    "campaign":                  "campaign_name",   # EN
+
+    # ── Impressões ────────────────────────────────────────────────────────
+    "impr.":                     "impressions",     # PT-BR oficial (com ponto abreviado)
+    "impressões":                "impressions",     # PT-BR por extenso
+    "impressions":               "impressions",     # EN
+
+    # ── Cliques ───────────────────────────────────────────────────────────
+    "cliques":                   "clicks",          # PT-BR oficial
+    "clicks":                    "clicks",          # EN
+
+    # ── Investimento / Custo ──────────────────────────────────────────────
+    "custo":                     "spend",           # PT-BR oficial
+    "cost":                      "spend",           # EN
+    "custo_(brl)":               "spend",           # PT-BR com moeda explícita
+    "cost_(brl)":                "spend",
+    "cost_(usd)":                "spend",
+
+    # ── CTR ───────────────────────────────────────────────────────────────
+    "ctr":                       "ctr",             # igual em PT e EN
+
+    # ── CPC médio ─────────────────────────────────────────────────────────
+    "cpc_médio":                 "cpc",             # PT-BR oficial
+    "avg._cpc":                  "cpc",             # EN
+    "avg._cpc_(brl)":            "cpc",
+    "cpc_medio":                 "cpc",             # sem acento (exportações antigas)
+
+    # ── CPM ───────────────────────────────────────────────────────────────
+    "cpm_médio":                 "cpm",
+    "avg._cpm":                  "cpm",
+    "cpm_medio":                 "cpm",
+
+    # ── Conversões ────────────────────────────────────────────────────────
+    "conversões":                "conversions",     # PT-BR oficial
+    "conversions":               "conversions",     # EN
+    "todas_as_conv.":            "conversions",     # variante "Todas as conv."
+    "all_conv.":                 "conversions",
+
+    # ── Custo / conv. (CPA direto exportado pelo Google) ──────────────────
+    # Regra 3: 'Custo / conv.' -> cpa
+    "custo_/_conv.":             "cpa",             # PT-BR oficial (com espaços→underscore)
+    "cost_/_conv.":              "cpa",             # EN
+    "custo/conv.":               "cpa",             # variante sem espaços
+    "cost/conv.":                "cpa",
+
+    # ── Valor das conversões (para ROAS) ──────────────────────────────────
+    "valor_conv.":               "conversion_values",  # PT-BR oficial
+    "conv._value":               "conversion_values",  # EN
+    "all_conv._value":           "conversion_values",
+    "valor_todas_as_conv.":      "conversion_values",
+
+    # ── Taxa de conversão ─────────────────────────────────────────────────
+    "taxa_de_conv.":             "conv_rate",
+    "conv._rate":                "conv_rate",
+
+    # ── Grupo de anúncios ─────────────────────────────────────────────────
+    "grupo_de_anúncios":         "adset_name",
+    "ad_group":                  "adset_name",
+    "grupo_de_anuncios":         "adset_name",     # sem acento
+
+    # ── Anúncio ───────────────────────────────────────────────────────────
+    "anúncio":                   "ad_name",
+    "ad":                        "ad_name",
+    "anuncio":                   "ad_name",
+
+    # ── Quota de impressão ────────────────────────────────────────────────
+    "perc._de_impr._na_pesq.":   "impression_share",
+    "search_impr._share":        "impression_share",
+
+    # ── Data ──────────────────────────────────────────────────────────────
+    "dia":                       "date",            # Google exporta "Dia" em PT
+    "day":                       "date",
+    "semana":                    "week",
+    "week":                      "week",
+    "mês":                       "month",
+    "month":                     "month",
+
+    # ── Alcance (raramente presente, mas mapeado por compatibilidade) ─────
+    "reach":                     "reach",
 }
 
 # Meta Ads já usa nomes padrão; mapeamento identidade apenas para os aliases
@@ -362,60 +401,155 @@ def normalize_columns(df: pd.DataFrame, platform: str) -> pd.DataFrame:
 # uma linha de "Total" no final. Ambas precisam ser removidas antes do parse
 # para não contaminar os dados numéricos.
 
+def _parse_br_number(value) -> float:
+    """
+    Converte um valor numérico no formato PT-BR do Google Ads para float.
+
+    Regra 2 (Tratamento de Números — Padrão BR):
+    - Remove aspas, espaços e símbolo de moeda (R$, $, €, £)
+    - Substitui '--', '-', '', NaN por 0.0
+    - Converte formatos:
+        '162,04'    → 162.04    (decimal BR com vírgula)
+        '1.234,56'  → 1234.56   (milhar+decimal BR)
+        '1.200'     → 1200.0    (milhar BR sem decimal — ponto + 3 dígitos)
+        '1000'      → 1000.0    (inteiro puro)
+        '45%'       → 45.0      (remove %)
+    """
+    if value is None:
+        return 0.0
+    s = str(value).strip().strip('"').strip("'")
+    # Valores vazios ou placeholder '--' do Google Ads
+    if s in ("", "--", "-", "nan", "NaN", "N/A", "n/a"):
+        return 0.0
+    # Remove símbolos de moeda, espaços e %
+    for ch in ("R$", "$", "€", "£", "%", " "):
+        s = s.replace(ch, "")
+    s = s.strip()
+    if not s:
+        return 0.0
+
+    # Caso 1: tem vírgula e ponto → '1.234,56' → milhar=ponto, decimal=vírgula
+    if "," in s and "." in s:
+        s = s.replace(".", "").replace(",", ".")
+
+    # Caso 2: só vírgula → '162,04' → decimal BR
+    elif "," in s:
+        s = s.replace(",", ".")
+
+    # Caso 3: só ponto — pode ser decimal EN ('1.5') ou milhar BR ('1.200')
+    # Heurística: se os dígitos APÓS o ponto são exatamente 3, é milhar BR.
+    elif "." in s:
+        parts = s.split(".")
+        if len(parts) == 2 and len(parts[1]) == 3 and parts[1].isdigit():
+            # '1.200' → milhar BR → remove o ponto
+            s = s.replace(".", "")
+        # else: '1.5', '3.14' → decimal EN → deixa como está
+
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
+# Colunas numéricas do Google Ads que precisam de conversão PT-BR.
+# Inclui os nomes originais do CSV (antes do mapeamento) para garantir
+# que a conversão ocorra mesmo se normalize_columns não tiver rodado ainda.
+_GOOGLE_ADS_NUMERIC_ORIGINALS = {
+    # Nomes originais PT-BR do CSV
+    "custo", "impr.", "cliques", "conversões", "custo_/_conv.",
+    "ctr", "cpc_médio", "cpm_médio", "valor_conv.", "taxa_de_conv.",
+    "perc._de_impr._na_pesq.", "todas_as_conv.", "valor_todas_as_conv.",
+    # Nomes EN
+    "cost", "impressions", "clicks", "conversions", "cost_/_conv.",
+    "avg._cpc", "avg._cpm", "conv._value", "all_conv.", "all_conv._value",
+    "search_impr._share",
+    # Nomes internos (pós-mapeamento) — proteção dupla
+    "spend", "cpc", "cpm", "cpa", "conversion_values", "conv_rate",
+    "impression_share",
+}
+
+
 def clean_google_ads_csv(file) -> pd.DataFrame:
     """
-    Lê o CSV do Google Ads ignorando linhas de cabeçalho extras (relatório
-    gerado pelo Google tem 2 linhas antes do header real) e remove a linha
-    de totais no final.
+    Carrega e limpa o CSV exportado pelo Google Ads (interface PT-BR).
+
+    Regra 1 — Pular linhas de título:
+        O Google Ads insere 2 linhas de cabeçalho antes do header real
+        (ex: 'Relatório de campanha' na linha 1, linha em branco na 2).
+        Usa skiprows=2 para começar direto na linha de colunas.
+
+    Regra 2 — Tratamento numérico PT-BR:
+        Aplica _parse_br_number() em todas as colunas numéricas conhecidas,
+        convertendo '162,04' → 162.04, '--' → 0.0, etc.
+
+    Regra 3 — Remoção de linha de Total:
+        Remove a última linha de totais que o Google Ads adiciona
+        (onde a coluna Campanha contém 'Total').
     """
     for enc in ("utf-8", "utf-8-sig", "latin-1", "cp1252"):
         try:
             file.seek(0)
-            raw = file.read().decode(enc)
-            lines = raw.splitlines()
 
-            # Encontra a linha do header real: é a primeira linha que
-            # contenha "Campaign" ou "Campanha" (case-insensitive).
-            header_idx = 0
-            for i, line in enumerate(lines):
-                lower = line.lower()
-                if "campaign" in lower or "campanha" in lower or "impr" in lower:
-                    header_idx = i
-                    break
-
-            # Reconstrói o CSV a partir do header real
-            clean = "\n".join(lines[header_idx:])
-            import io as _io
-            df = pd.read_csv(_io.StringIO(clean))
-            df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
-
-            # Remove linhas de total: onde a coluna de campanha é "total"
-            # (Google Ads exporta "Total" em PT e EN)
-            camp_col = next(
-                (c for c in df.columns if c in ("campaign", "campanha", "campaign_name")),
-                None,
+            # ── Regra 1: skiprows=2 pula as duas linhas de título ────────
+            df = pd.read_csv(
+                file,
+                encoding=enc,
+                skiprows=2,          # linha 0 = título do relatório, linha 1 = em branco
+                dtype=str,           # importa tudo como string — conversão numérica abaixo
+                skip_blank_lines=True,
             )
-            if camp_col:
-                df = df[~df[camp_col].astype(str).str.strip().str.lower().isin(
-                    ["total", "totals", "grand total", "total geral"]
-                )]
+
+            # Normaliza nomes de colunas: strip + lowercase + espaços→underscore
+            df.columns = [
+                c.strip().lower().replace(" ", "_").replace("/", "/")
+                for c in df.columns
+            ]
+
+            # ── Regra 3: remove linha de Total (última linha do relatório) ──
+            # O Google Ads exporta uma linha final com "Total" na col de campanha.
+            camp_candidates = [
+                c for c in df.columns
+                if c in ("campanha", "campaign", "campaign_name")
+            ]
+            if camp_candidates:
+                camp_col = camp_candidates[0]
+                df = df[
+                    ~df[camp_col]
+                    .astype(str)
+                    .str.strip()
+                    .str.lower()
+                    .isin(["total", "totals", "grand total", "total geral", "total:"])
+                ]
 
             # Remove linhas completamente vazias
             df = df.dropna(how="all").reset_index(drop=True)
+
+            # ── Regra 2: conversão numérica PT-BR ────────────────────────
+            # Itera sobre as colunas presentes no df que são conhecidamente
+            # numéricas, aplicando o parser BR antes do mapeamento de nomes.
+            for col in df.columns:
+                if col in _GOOGLE_ADS_NUMERIC_ORIGINALS:
+                    df[col] = df[col].apply(_parse_br_number)
+
             return df
 
         except Exception:
             continue
 
-    raise ValueError("Não foi possível decodificar o CSV do Google Ads.")
+    raise ValueError(
+        "Não foi possível carregar o CSV do Google Ads. "
+        "Verifique se o arquivo foi exportado em formato CSV pela interface do Google Ads."
+    )
 
 def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     """Clean and derive metrics."""
-    # Numeric coercion
+    # Numeric coercion — inclui 'cpa' e 'conv_rate' mapeados do Google Ads
     numeric_cols = [
         "impressions", "clicks", "spend", "reach", "ctr", "cpc",
         "cpm", "frequency", "conversions", "conversion_values",
-        "roas", "result_rate", "cost_per_result"
+        "roas", "result_rate", "cost_per_result",
+        "cpa",        # mapeado de 'Custo / conv.' do Google Ads
+        "conv_rate",  # mapeado de 'Taxa de conv.' do Google Ads
     ]
     for col in numeric_cols:
         if col in df.columns:
@@ -425,6 +559,7 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
                 .str.replace(r"[R$\s%,]", "", regex=True)
                 .str.replace(",", ".", regex=False)
                 .pipe(pd.to_numeric, errors="coerce")
+                .fillna(0)
             )
 
     # Derive missing metrics
@@ -439,6 +574,10 @@ def preprocess(df: pd.DataFrame) -> pd.DataFrame:
 
     if "roas" not in df.columns and {"conversion_values", "spend"}.issubset(df.columns):
         df["roas"] = df["conversion_values"] / df["spend"].replace(0, float("nan"))
+
+    # Deriva CPA quando não veio mapeado diretamente do Google Ads
+    if "cpa" not in df.columns and {"spend", "conversions"}.issubset(df.columns):
+        df["cpa"] = df["spend"] / df["conversions"].replace(0, float("nan"))
 
     return df
 
